@@ -1,0 +1,89 @@
+---
+title: "Tree Creation with FastTree2"
+author: "FiG-T"
+data: "`r Sys.Date()`"
+output: 
+  html_document: 
+    keep_md: yes
+    toc: yes
+toc: TRUE
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+# Introduction
+
+This script outlines how to go from the alignment file to the full phylogenetic tree.  Given the number of sequences, Taxonium is recommended for detailed viewing. 
+
+## Running FastTree
+
+FastTree 2 (<http://www.microbesonline.org/fasttree/>) was used to infer an
+"approximately maximum likelihood" phylogenetic tree for all individuals in the
+filtered alignment file (total of 23,791 individuals).
+
+This package was selected as it is designed to work with a very large number of
+sequences and performs better than comparable ML programs (e.g. PhyML) when
+default settings are used.
+
+> *FastTree uses the Jukes-Cantor or [generalized
+> time-reversible](http://en.wikipedia.org/wiki/Substitution_model#GTR:_Generalised_time_reversible)
+> (GTR) models of nucleotide evolution and the JTT ([Jones-Taylor-Thornton
+> 1992](http://www.ncbi.nlm.nih.gov/pubmed/1633570)), WAG ([Whelan & Goldman
+> 2001](http://www.ncbi.nlm.nih.gov/pubmed/11319253)), or LG ([Le and Gascuel
+> 2008](http://mbe.oxfordjournals.org/content/25/7/1307.short)) models of amino
+> acid evolution. To account for the varying rates of evolution across sites,
+> FastTree uses a single rate for each site (the
+> ["CAT"](http://ieeexplore.ieee.org/xpl/freeabs_all.jsp?arnumber=1639535)
+> approximation). To quickly estimate the reliability of each split in the tree,
+> FastTree computes [local support
+> values](http://www.microbesonline.org/fasttree/#Support) with the
+> [Shimodaira-Hasegawa
+> test](http://mbe.oxfordjournals.org/cgi/reprint/16/8/1114) (these are the same
+> as PhyML 3's ["SH-like local
+> supports"](http://www.ncbi.nlm.nih.gov/pubmed/19378142)).*
+>
+> \- <http://www.microbesonline.org/fasttree/> [accessed 08.02.2024]
+
+To run FastTree (after installation):
+
+```{bash FastTree, include = FALSE}
+
+[path-to-FastTree] -nt -gtr -log data/fasta/complete_output_filtered_3_09.2023.fasta > data/mafft_aln_filtered_FastTree_02_2024.tree
+
+```
+
+The resulting tree includes all individuals present in the filtered alignment
+(23,791). This is as all individuals may be informative for providing the tree,
+however not all countries have enough individuals to be representative (hence
+some individuals will be filtered out downstream).
+
+## Midpoint rooting
+
+As no specific outgroup is provided in the alignment there is no obvious
+candidate to root the resulting tree. To get around this issue, midpoint rooting
+was used (whereby the root is placed halfway between the two longest tips).
+
+```{r load_FastTree_output}
+
+# load tree
+FastTree_full <- ape::read.tree(
+  file = "data/mafft_aln_filtered_FastTree_02_2024.tree"
+  # tree generated above 
+)
+
+```
+
+```{r midpoint_rooting}
+
+FastTree_full_rooted <- phangorn::midpoint(
+  FastTree_full
+)
+
+# save this tree
+ape::write.tree(
+  phy = FastTree_full_rooted, 
+  file = "data/mafft_aln_filtered_FastTree_02_2024_rooted.tree"
+)
+```

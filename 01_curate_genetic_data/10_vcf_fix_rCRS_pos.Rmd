@@ -1,0 +1,65 @@
+---
+title: "Convert VCF"
+author: "FiG-T"
+data: "`r Sys.Date()`"
+output: 
+  html_document: 
+    keep_md: yes
+    toc: yes
+toc: TRUE
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+As gaps are introduced into the sequences during the multiple sequence alignment step, the positions in the resulting VCF no longer match the reference genome. 
+
+The following script can be used to correct these values in the VCF. 
+
+#### Correcting vcf position numbers 
+
+```{r libraries}
+library(vcfR)
+library(dplyr)
+```
+
+```{r import_data}
+vcf <- read.vcfR("~/Documents/data/lhf_d/vcf/snp_sites_filtered_vcf_maf0.005_noRef_092023.recode.vcf")
+
+rCRS <- feather::read_feather(
+  path = "~/Documents/data/lhf_d/feather/rCRS_phasing.feather"
+)
+rCRS <- rCRS[,-1]
+```
+
+```{r}
+# Get the VCF fixed fields as a data.frame
+vcf_fix <- as.data.frame(vcf@fix)
+
+# Convert POS to numeric
+vcf_fix$POS <- as.numeric(vcf_fix$POS)
+
+# Join to get NEW_POS
+vcf_fix <- left_join(vcf_fix, rCRS, by = c("POS" = "aln_pos"))
+
+# Replace POS with NEW_POS
+vcf_fix$POS <- vcf_fix$rCRS_pos
+
+# Remove NEW_POS column (if you want)
+vcf_fix <- vcf_fix[,-9]
+
+# Ensure POS is character (vcfR stores all fix data as characters)
+vcf_fix$POS <- as.character(vcf_fix$POS)
+
+vcf@fix <- as.matrix(vcf_fix)
+
+str(vcf@fix)
+
+write.vcf(
+  vcf, 
+  file = "/data/vcf/rCRS_aligned_filtered_vcf_maf0.005_noRef_042025.recode.vcf", 
+  fileEncoding = "UTF-8"
+)
+
+```

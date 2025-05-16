@@ -1,0 +1,105 @@
+---
+title: "Collecting sample names"
+author: "FiG-T"
+data: "`r Sys.Date()`"
+output: 
+  html_document: 
+    keep_md: yes
+    toc: yes
+toc: TRUE
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+During the multiple sequence alignment filtering steps we have removed a number
+of sequences from the original data. For the metadata files (created
+later) we need to ensure that the list of samples names with the associated
+environmental data *exactly matches* the sample names in the VCF file.
+
+The list of sample names is best queried using **BCFtools**, another command
+line tool capable of quickly dealing with VCF (and bcf) files. (It can also be
+downloaded using homebrew on Mac OS)
+
+```{bash bcftools_sample_names, include=FALSE, echo=TRUE}
+
+# navigate to the correct directory:
+cd path/to/vcfs
+
+# run bcftools query
+bcftools query -l snp_sites_filtered_vcf_maf0.005_noRef_092023.recode.vcf > lhf_filtered_maf0.005_sampleNames.txt
+
+```
+
+Problematic names should have been removed at an earlier stage (but some may
+have slipped through the net). To avoid any further issues some name
+substitutions can be completed.
+
+```{r sample_names, include=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+
+# import bcftools query into R
+seq_names <- readr::read_delim(
+  file = "data/vcf/lhf_filtered_maf0.005_sampleNames.txt", 
+  delim = "/t", 
+  col_names = "samples"
+)
+
+# separate out names 
+seq_names <- tidyr::separate(
+  data = seq_names, 
+  col = samples, 
+  into = c("acc", "a", "b", "c", "d" , "e", "f"), 
+  sep = "_"
+) 
+# combine country words into a single column
+seq_names <- tidyr::unite(
+  data = seq_names, 
+  col = "country", 
+  a, b, c, d, e , f, 
+  sep = " ", 
+  na.rm = TRUE
+)
+
+# replace names of problem countries
+seq_names$country <- gsub(
+  pattern = "USA", 
+  replacement = "United States",
+  x = seq_names$country
+)
+seq_names$country <- gsub(
+  pattern = "Great Britain", 
+  replacement = "United Kingdom",
+  x = seq_names$country
+)
+seq_names$country <- gsub(
+  pattern = "Czech Republic", 
+  replacement = "Czechia", 
+  x = seq_names$country
+)
+seq_names$country <- gsub(
+  pattern = "RussiaRussia", 
+  replacement = "Russia", 
+  x = seq_names$country
+)
+seq_names$country <- gsub(
+  pattern = "JapanJapan", 
+  replacement = "Japan", 
+  x = seq_names$country
+)
+
+# convert to a table column for later:
+seq_names_col <- as.data.frame(seq_names)
+
+# select unique variables
+seq_names <- unique(seq_names$country)
+seq_names <- sort(seq_names)
+```
+
+```{r save_seq_names}
+# save the list of names
+feather::write_feather(
+  x = seq_names, 
+  path = "data/vcf/SequenceNames.txt"
+)
+```

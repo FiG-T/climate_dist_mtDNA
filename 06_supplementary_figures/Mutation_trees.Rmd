@@ -1,0 +1,140 @@
+---
+title: "Mutation Trees"
+author: "FiG-T"
+data: "`r Sys.Date()`"
+output: 
+  html_document: 
+    keep_md: yes
+    toc: yes
+toc: TRUE
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+```{r load_data}
+seq_names <- readr::read_delim(
+  file = "data/vcf/SequenceNames.txt", 
+  delim = "/t", 
+  col_names = "samples"
+)
+
+latprecip_core_min_clust <- feather::read_feather(
+  path = "results/feather/core_GLM_scores_mins_ds_clusteredr0.2_11_2024.feather" # check date
+)
+latprecip_candidates_rcrs <- unique(latprecip_core_min_clust$rCRS_pos)
+
+gt_meta_pc_ds <- feather::read_feather(
+  path = "data/feather/gt_meta_PCs_DOWNSAMPLED.feather"
+)
+
+```
+
+
+```{r sorting_tree_names}
+seq_names <- seq_names %>%
+  separate_wider_delim(
+    cols = samples, 
+    names = c("acc", "country"),
+    too_many = "merge",
+    delim = "_", 
+    cols_remove = FALSE
+  )
+
+names(seq_names) <- c("acc", "country_og", "samples_og")
+
+glm_indv_acc <- gt_meta_pc_ds %>% 
+  select(acc)
+
+glm_og_links <- left_join(
+  x = glm_indv_acc, 
+  y = seq_names
+)
+
+glm_indv <- c(glm_og_links$samples_og)
+length(glm_indv)
+```
+
+```{r pruning_tree}
+
+pruned_tree <- drop.tip(
+  FastTree_full_rooted, 
+  setdiff(
+    FastTree_full_rooted$tip.label, 
+    glm_indv
+  )
+)
+
+length(FastTree_full_rooted$tip.label)
+length(pruned_tree$tip.label)
+
+# create a new tibble for the tree metadata 
+tree_meta <- dplyr::as_tibble(pruned_tree$tip.label) %>% distinct()
+names(tree_meta) <- "samples_og"
+
+tree_meta <- dplyr::left_join(
+  tree_meta, 
+  glm_og_links,  # this is queried above
+  by = join_by("samples_og"=="samples_og")
+)
+
+# combine populations (countries) with the associated metadata
+tree_meta <- dplyr::left_join(
+  tree_meta, 
+  gt_meta_pc_ds,  # this is queried above
+  by = join_by("acc"=="acc")
+)
+```
+
+```{r save_tree}
+# save tree
+ape::write.tree(
+  phy = pruned_tree, 
+  file = "results/lhf_pruned_ds_FastTree.tree"
+)
+```
+
+Loop through and write trees to file: 
+
+```{r write_trees_to_file}
+
+for (i in seq_along(latprecip_candidates_rcrs) ) { # see above for GT_cor_pos
+  
+  j <- latprecip_candidates_rcrs[i]
+  k <- latprecip_candidates_rcrs[i]
+  
+  path <- paste0(
+    "/figures/supplementary/candidate_trees/lhf_candidate_trees_02_2025_", 
+    latprecip_candidates_rcrs[i], 
+    ".png"
+  )
+  
+  png(
+    file = path , 
+    bg = "white", 
+    width = 1000, 
+    height = 1000, 
+    units = "px"
+)
+  ape::plot.phylo(
+    x = pruned_tree, 
+    type = "fan",
+    show.tip.label = FALSE,
+    #use.edge.length = FALSE, 
+    cex = 0.7, 
+    #srt = 20, 
+    #label.offset = 0.05, 
+    edge.color = allele_palette[as.numeric(
+      as.factor(
+        tree_meta[[j]]
+      )
+    )], 
+    main = k
+  )
+
+  
+  dev.off()
+  
+}
+```

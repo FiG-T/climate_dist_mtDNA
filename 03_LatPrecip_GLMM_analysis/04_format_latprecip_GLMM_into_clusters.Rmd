@@ -1,0 +1,125 @@
+---
+title: "Formatting LatPrecip GLMM results"
+author: "FiG-T"
+date: "2024-11-11"
+output:
+ html_document:
+   keep_md: true
+   toc: true
+toc: true
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+# Introduction
+
+This script takes the results of the LatPrecip GLMM analysis and performs a series of subsetting and formating steps that will be used for downstream plotting and checks. 
+
+## Libraries
+
+```{r libraries}
+library(feather)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+```
+
+## Required data 
+
+Importing data from previous scripts: 
+
+```{r required_data}
+# formatted table (see 2_run_latprecipGLMMS.Rmd)
+core_GLM_scores_formatted_phased <- feather::read_feather(
+  path = "data/feather/core_GLM_scores_formatted_phased_ds_08_2024.feather" 
+)
+
+# SNP clustering (see 3_genotype_clusters.Rmd)
+GT_clust_names <- feather::read_feather(
+  path = "results/genotype_correlated_clusters_r0.2.feather"
+)
+
+# mtDNA loci positioning 
+mt_loci_pos <- feather::read_feather(
+  path = "data/feather/mtDNA_loci_all_positions_classifications.feather"
+)
+```
+
+We can then select the subset of SNPs that significantly outperform the null model (with shared ancestry alone), and append information detailing the location of mtDNA genes. 
+
+```{r core_minimum_models}
+# select SNPs where the alternative model performs significantly better
+core_GLM_min_null <- core_GLM_scores_formatted_phased  %>%
+  filter(null_label == "T" & !is.na(Df)) %>%
+  select(
+    snp_pos, rCRS_pos, overdisp, null_chisq, value
+  )
+
+# add in mt loci data
+core_GLM_min_null <- left_join(
+  core_GLM_min_null, 
+  mt_loci_pos, 
+  by = join_by(
+    rCRS_pos >= Starting, 
+    rCRS_pos <= Ending
+  )
+)
+
+# remove duplicate rows
+core_GLM_min_null <- distinct(core_GLM_min_null)
+
+# combine with cluster data
+lhf_core_min_clust <- left_join(
+  core_GLM_min_null, 
+  GT_clust_names, 
+  by = join_by("rCRS_pos"=="rCRS")
+)
+
+# select the most significant variant in each cluster
+lhf_core_min_clust <- lhf_core_min_clust %>%
+  group_by(cluster) %>%
+  slice_min(null_chisq)
+
+```
+
+Once these steps have been created, we can save these (intermediate) files.  Note that we save all details of all SNPs that significantly outperformed the null, as all of these SNPs will be tested later in downstream analysis.
+
+```{r save_cluster_candidate}
+# save this files
+feather::write_feather(
+  x = core_GLM_min_null, 
+  path = "results/feather/core_GLM_scores_mins_ds_08_2024.feather" # check date
+)
+
+feather::write_feather(
+  x = lhf_core_min_clust, 
+  path = "results/feather/core_GLM_scores_mins_ds_clusteredr0.2_11_2024.feather" # check date
+)
+```
+
+# Checking PC importance
+In this approach we use principal components to account for shared ancestry.  It is thus important to check that the PCs used are indeed explaining significant proportions of the variance observed. 
+
+```{r core_GLM_hits_formatting}
+
+# define the significance threshold
+alpha <- 0.01
+
+# check that one of the PCs is a significant predictor for every SNP
+latprecip_GLM_hits_pc <- core_GLM_scores_formatted_phased %>%
+  group_by(rCRS_pos) %>%
+  filter(covariate %in% c("PC1", "PC2", "PC3", "PC4")) %>% 
+  slice_min(`Pr(Chi)`) %>%
+  filter(`Pr(Chi)` > alpha/(length(unique(core_GLM_scores_formatted_phased$snp_pos))*6))
+# this table should be empty
+
+message(
+  "Checking if all SNPs have at least one of the PCs as a significant predictor"
+)
+nrow(latprecip_GLM_hits_pc) == 0 # should be TRUE
+
+```
+

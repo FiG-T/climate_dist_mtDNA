@@ -1,0 +1,332 @@
+---
+title: "Formatting and Merging Data"
+author: "FiG-T"
+data: "`r Sys.Date()`"
+output: 
+  html_document: 
+    keep_md: yes
+    toc: yes
+toc: TRUE
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline 
+---
+
+# Introduction
+
+This markdown focuses on how to create the final dataset used to run the LatPrecip Generalised Linear Mixed Models (GLMs). 
+
+## Libraries
+
+```{r libraries}
+library(feather)
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(parallel)
+library(ggplot2)
+library(stringr)
+```
+
+# Required data
+
+1.  Genotype matrix (see genetic_data_curation_pipeline.Rmd)
+2.  Principal Component Scores
+3.  Environmental metadata for all of the samples (in countries that meet the
+    requirements)
+4.  A list of all the mtDNA loci and their classifications
+
+```{r load_required_data}
+
+# genotype matrix
+gt_t <- feather::read_feather(
+  path = "data/feather/gt_table_02_2024.feather"
+)
+
+# environemental metadata 
+meta2 <- feather::read_feather(
+  path = "data/feather/meta2_maf0.005_data_11_2023.feather"
+)
+
+# sample names in vcf
+seq_names <- readr::read_delim(
+  file = "data/vcf/SequenceNames.txt", 
+  delim = "/t", 
+  col_names = "samples"
+)
+
+# mtDNA loci positioning 
+mt_loci_pos <- feather::read_feather(
+  path = "data/feather/mtDNA_loci_all_positions_classifications.feather"
+)
+
+# mtDNA PCA scores 
+pca_scores <- feather::read_feather(
+  path = "data/feather/pca_scores_0.005_03_2024.feather"
+)
+# mtDNA PCA eigenvalues
+pca_eig <- feather::read_feather(
+  path = "data/feather/pca_eig_0.005_03_2024.feather"
+)
+
+rCRS <- feather::read_feather(
+  path = "data/feather/rCRS_phasing.feather"
+)
+```
+
+# Filter number sequences per country
+
+Filter countries to only keep individuals that come from a country with more
+that 20 sequences.
+
+```{r country_filter}
+# group by country and summarise: 
+country_N <- meta2 %>%  # generated above
+  group_by(country) %>%
+  summarise(
+    N = n()
+  )
+
+# filter out countries with fewer than 20
+country_N <- country_N %>%
+  filter(N >= 20)  # define the cutoff value. 
+
+# convert remaining countries to a list 
+country_N <- c(country_N$country)
+
+meta2 <- meta2 %>%
+  filter(country %in% country_N)
+```
+
+```{r create_names_link}
+seq_names <- seq_names %>%
+  separate_wider_delim(
+    cols = samples, 
+    names = c("acc", "country"),
+    too_many = "merge",
+    delim = "_", 
+    cols_remove = FALSE
+  )
+
+names(seq_names) <- c("acc", "country_og", "samples_og")
+
+```
+
+# Merging datasets
+
+The GLM models require all the data to be contained within a single table, it is
+therefore necessary to join all the datasets together.
+
+```{r merge_datasets}
+
+# merge names link at meta 
+gt_meta <- dplyr::left_join(
+  meta2, 
+  seq_names, 
+  by = "acc"
+)
+
+# add in genotype data 
+gt_meta <- dplyr::left_join(
+  gt_meta, 
+  gt_t, 
+  by = join_by("samples_og" == "id")
+)
+
+# format column names 
+names(gt_meta) <- gsub(
+  pattern = "1_", 
+  replacement = "pos_", 
+  x = names(gt_meta)
+)
+
+# Convert genotype data to numeric 
+for (x in 22:ncol(gt_meta)){
+
+  col <- names(gt_meta)[x]
+
+gt_meta[[col]] <- as.numeric(gt_meta[[col]])
+}
+```
+
+This combined contains data on:
+
+1.  Unique sample codes for each mtDNA sequence.
+2.  Associated geographical data
+3.  Associated BioClimatic covariates (arranged by countries).
+
+As the range and units or the different environmental covariates are variable,
+these all need to be scaled before being used in the GLM analysis.
+
+```{r scale_covariates}
+
+# Scale the values 
+col_to_scale <- c(4,5,11:19)
+for (x in col_to_scale){
+  
+  col <- names(gt_meta)[x]
+  
+  gt_meta[[col]] <- scale(gt_meta[[col]])
+}
+
+```
+
+```{r save_gt_meta_pd}
+
+# Save this file 
+feather::write_feather(
+  x = gt_meta, 
+  path = "data/feather/gt_meta_08_2024.feather"
+)
+
+```
+
+## Adding PCs to metafile
+
+```{r re_load_data}
+
+# load in data 
+gt_meta <- feather::read_feather(
+  path = "data/feather/gt_meta_08_2024.feather"
+)
+
+```
+
+```{r merge_PC_meta}
+
+# check the number of rows in each 
+nrow(gt_meta) 
+nrow(pca_scores)
+nrow(meta2)
+
+# meta2 matches the pca scores (this is as meta 2 was filtered to create gt_meta_pd) - see core_GLMs
+
+# bind the acc numbers to the pca scores 
+pca_scores <- cbind(
+  meta2 %>% select(acc), 
+  pca_scores
+)
+
+head(pca_scores)
+
+# use this to combine with the full metadata table 
+gt_meta_pc <- right_join(
+  x = pca_scores, 
+  y = gt_meta, 
+  by = "acc"
+)
+
+gt_meta_pc$PC1 <- scale(gt_meta_pc$PC1)
+gt_meta_pc$PC2 <- scale(gt_meta_pc$PC2)
+gt_meta_pc$PC3 <- scale(gt_meta_pc$PC3)
+gt_meta_pc$PC4 <- scale(gt_meta_pc$PC4)
+
+head(gt_meta_pc)
+
+nrow(gt_meta_pc)
+  # this is the same length as before
+```
+
+Save this file:
+
+```{r save_meta_pc}
+
+# Save this file 
+feather::write_feather(
+  x = gt_meta_pc, 
+  path = "data/feather/gt_meta_PCs_08_2024.feather"
+)
+
+```
+
+## Down-sampling
+
+As there are some countries that have a noticably larger number of individuals
+(N\>1000) there is the possibility that these countries may create artefacts in
+the downstream analysis.
+
+One way to check that this is not the case is to sequenctially drop countries
+with a large sample size, re-run the analysis, and check that the results are
+stable. This is computationally expensive, but has been carried out as a sanity
+check (see below [Dropping countries]).
+
+An alternate method is to cap the maximum number of individuals from each
+population, and down-sample countries to meet this cap. In this instance a cap
+of 1000 individuals has been used.
+
+```{r country_N}
+
+N_cap <- 1000 # the cap in place
+
+gt_meta_pc %>% 
+  group_by(country) %>%
+  summarise(
+    N = n()
+  ) %>%
+   filter(N > N_cap) %>%
+   print()
+```
+
+### Down-sampling data curation
+
+```{r down_sample_curation}
+
+countries_to_sample <- c("USA", "GBR", "ESP", "RUS") # use ISO3 codes (help avoid annoying errors)
+
+down_sampler <- function(
+        input, 
+        N_cap, 
+        sample_countries
+) {
+  
+  # keep countries that do not need to be downsampled
+  table_unedited <- input %>%
+    filter(!iso3 %in% sample_countries) 
+  
+  message(
+    " 'Unedited' samples preserved . 
+    --------------------------------------------------"
+  )
+  
+  table_sampled <- input %>%
+    filter(iso3 %in% sample_countries) %>% # select countries to sample
+    group_by(iso3) %>% # group by each country 
+    slice_sample(
+      n = N_cap,  # the cap you are downsampling to
+      replace = FALSE # each indv can only be sampled once
+    )
+  
+  # join the unsampled countries with the newly sampled individuals 
+  table_combined <- rbind(table_unedited, table_sampled)
+  
+  return(table_combined)
+  
+}
+
+gt_meta_pc_ds <- down_sampler(
+  input = gt_meta_pc, 
+  N_cap = 1000, 
+  sample_countries = countries_to_sample
+)
+
+# check that the countries have been successfully downsampled
+gt_meta_pc_ds %>% 
+  group_by(country) %>%
+  summarise(
+    N = n()
+  ) %>%
+  slice_max(N, n = 10) %>%
+  print()
+```
+
+Save this file too:
+
+```{r save_downsampled}
+feather::write_feather(
+  x = gt_meta_pc_ds, 
+  path = "data/feather/gt_meta_PCs_DOWNSAMPLED.feather"
+)
+
+```
+

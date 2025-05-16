@@ -1,0 +1,245 @@
+---
+title: "Drop countries LatPrecip GLMM check"
+author: "FiG-T"
+date: "2025-05-15"
+output:
+ html_document:
+   keep_md: true
+   toc: true
+toc: true
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+```{r libraries}
+library(feather)
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(parallel)
+library(ggplot2)
+library(stringr)
+```
+
+```{r load palette}
+source("https://raw.githubusercontent.com/FiG-T/climate_dist_mtDNA/refs/heads/main/climate_mtDNA_colour_palettes.R") # you may beed to add on a token here to gain access. 
+
+```
+
+
+```{r overdispersion_function}
+overdisp_fun <- function(model) {
+  rdf <- df.residual(model)
+  rp <- residuals(model,type="pearson")
+  Pearson.chisq <- sum(rp^2)
+  prat <- Pearson.chisq/rdf
+  pval <- pchisq(Pearson.chisq, df=rdf, lower.tail=FALSE)
+  c(chisq=Pearson.chisq,ratio=prat,rdf=rdf,p=pval)
+}
+```
+
+```{r import_data}
+# Import the downsampled metadata file with environmental variables and genotypes
+
+gt_meta_pc_ds <- feather::read_feather(
+  path = "data/feather/gt_meta_PCs_DOWNSAMPLED.feather"
+)
+
+rCRS <- feather::read_feather(
+  path = "data/feather/rCRS_phasing.feather"
+)
+
+# SNP clustering (see 3_genotype_clusters.Rmd)
+GT_clust_names <- feather::read_feather(
+  path = "results/genotype_correlated_clusters_r0.2.feather"
+)
+
+# mtDNA loci positioning 
+mt_loci_pos <- feather::read_feather(
+  path = "data/feather/mtDNA_loci_all_positions_classifications.feather"
+)
+```
+
+```{r drop_countries}
+gt_meta_pc_ds_dropped <- gt_meta_pc_ds %>%
+  filter(subcontinent != "Australia and New Zealand") %>%
+  filter(continent != "North America") %>%   # remove North American sequences
+  filter(continent != "South America")       # remove South American sequences
+
+# 16743 sequences remaining 
+
+# check that sequences have been removed
+levels(factor(gt_meta_pc_ds_dropped$subcontinent))
+
+
+```
+
+```{r run_GLMMs}
+# run functions core_GLM_chi_scorer and GLM scorer parallel 
+system.time(
+latprecip_glm_scores_dropped <- core_GLM_chi_scorer(
+  input = gt_meta_pc_ds_dropped, 
+  start_col = 26, 
+  test_formula = "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + lat + precip_yr ", 
+  null_formula = "~ PC1 + PC2 + PC3 + PC4 + (1|iso2)"
+)
+)
+```
+
+```{r save_output}
+feather::write_feather(
+  x = latprecip_glm_scores_dropped,
+  path = "/results/core_GLMs_chisq_01_2025_dropped.feather"
+)
+write.csv(
+  x = latprecip_glm_scores_dropped, 
+  file = "/results/core_GLMs_chisq_01_2025_dropped.csv"
+)
+```
+
+```{r format_output}
+# looking at the results from the dropped test 
+latprecip_glm_scores_dropped_formatted <- core_GLM_formatter(
+  input = latprecip_glm_scores_dropped,  # full table with GLM scores
+  cutoff_quantile = 0.05,   # which values to include labels for 
+  overdisp_limits = c(0.8, 200), # the upper and lower bounds for overdispertion ratios
+  neaten = FALSE, 
+  alpha = 0.01
+)
+
+# merge with rCRS positions 
+latprecip_glm_scores_dropped_formatted <- left_join(
+  x = latprecip_glm_scores_dropped_formatted, 
+  y = rCRS, 
+  by = c("snp_pos"="aln_pos")
+)
+
+latprecip_glm_scores_dropped_formatted <- left_join(
+  x = latprecip_glm_scores_dropped_formatted, 
+  y = GT_clust_names, 
+  by = c("rCRS_pos"="rCRS")
+)
+
+latprecip_glm_scores_dropped_hits <- latprecip_glm_scores_dropped_formatted %>%
+  filter(null_label == "T") %>%
+  group_by(cluster) %>%
+  slice_min(null_chisq)
+
+length(unique(latprecip_glm_scores_dropped_hits$rCRS_pos))
+
+latprecip_dropped_candidates <- sort(unique(latprecip_glm_scores_dropped_hits$rCRS_pos))
+
+# loading in non-dropped candidates
+latprecip_candidates <- feather::read_feather(
+  path = "/data/feather/core_GLM_scores_mins_ds_clusteredr0.2_11_2024.feather"
+) 
+latprecip_candidates_rcrs <- unique(latprecip_candidates$rCRS_pos)
+
+sort(latprecip_candidates_rcrs)[sort(latprecip_candidates_rcrs) %in% latprecip_dropped_candidates == FALSE]
+ # of 4 candidate SNPs that are not recaptured: 
+  # m.3447 and m.9950 become under-dispersed (allele freq too low)
+  # m.11944 and m.14212 become over-dispersed (but are significant)
+
+
+
+```
+
+
+```{r make_plot}
+# making a quick plot: 
+
+alpha <- 0.01
+
+n_snps <-  length(unique(latprecip_glm_scores_dropped_formatted$rCRS_pos)) # change depending on the output from format_core_GLM_scores
+bon_threshold_null <- alpha/(n_snps*1)
+
+ggplot2::ggplot(
+  data = latprecip_glm_scores_dropped_formatted, 
+  mapping = aes(
+    x = rCRS_pos,
+    y = log10(null_chisq)
+  )
+) +
+  geom_point(
+    colour = "midnightblue",
+    size = 3
+  ) +
+  geom_line(
+    y = -1*log10(bon_threshold_null), 
+    colour = "black", 
+    linewidth = 1,
+  ) + 
+  scale_x_continuous(
+    breaks = seq(0,17000, 1000)
+  ) +
+  ylim(c(1, -18)
+  ) +
+  ylab(
+    "Logged 10 P-value"
+  ) +
+  xlab(
+    "Position (relative to rCRS)"
+  ) +
+  geom_segment(
+    data = mt_loci_pos,
+    ggplot2::aes(
+      x = Starting, 
+      #x = aln_start,
+      xend = Ending, 
+      #xend = aln_end,
+      y = 0.5, 
+      yend = 0.5, 
+      col = classification
+    ),
+    linewidth = 3, 
+    alpha = 0.7, 
+    position = ggplot2::position_jitter(
+      height = 0.1
+    )
+  ) +
+  scale_colour_manual(
+    values = c(
+      mtDNA_palette
+    )
+  ) +
+  #ggplot2::coord_polar(
+  #) + 
+  theme_minimal()+
+  theme(
+    legend.position = "none", 
+    axis.line = ggplot2::element_line(
+      linewidth = 1, 
+      colour = "black"
+    ), 
+    plot.background = ggplot2::element_rect(
+      fill = "white"
+    ), 
+    panel.grid = ggplot2::element_line(
+      colour = "white", 
+      linetype = "dotdash"
+    ),
+    panel.grid.major.x = ggplot2::element_line(
+      colour = "snow4", 
+      linetype = "dashed"
+    ), 
+    legend.background = ggplot2::element_rect(
+      fill = "white"
+    ), 
+    axis.title = element_text(
+      size = 20
+    ),
+    axis.text = element_text(
+      size = 14
+    )
+  )
+
+ggplot2::ggsave(
+  filename = "/figures/latprecip_manhattan_dropped_03_2025.png",
+  plot = last_plot(),
+  bg = "transparent", 
+  width = 11, 
+  height = 7
+)
+```

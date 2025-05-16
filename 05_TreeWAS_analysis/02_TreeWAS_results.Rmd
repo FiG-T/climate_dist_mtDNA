@@ -1,0 +1,195 @@
+---
+title: "TreeWAS results"
+author: "FiG-T"
+date: "`r Sys.Date()`"
+output:
+ html_document:
+   keep_md: true
+   toc: true
+toc: true
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+## Formatting output
+
+```{r load_data}
+treeWAS_output_lat_bonf_p0.05 <- load(
+  file = "results/treeWAS_RAW_output_lat_bonf_p0.05.RData"
+)
+
+latprecip_core_min_clust <- feather::read_feather(
+  path = "results/feather/core_GLM_scores_mins_ds_clusteredr0.2_11_2024.feather" # check date
+)
+
+GT_clust_names <- feather::read_feather(
+  path = "results/genotype_correlated_clusters_r0.5.feather" # loading in data with higher pearson's correlataion cutoff
+)
+
+# mtDNA loci positioning  - see mtDNA_loci.R
+mt_loci_pos <- feather::read_feather(
+  path = "~/Documents/data/lhf_d/feather/mtDNA_loci_all_positions_classifications.feather"
+)
+```
+
+```{r treeWAS_results}
+tw_sub <- tibble(
+  pos = names(treeWAS_output_lat_bonf_p0.05$subsequent$p.vals), 
+  pval_sub = treeWAS_output_lat_bonf_p0.05$subsequent$p.vals,
+  scores_sub = treeWAS_output_lat_bonf_p0.05$subsequent$corr.dat
+)
+
+hist(tw_sub$scores_sub, breaks = 20)
+```
+
+```{r format_columns}
+# separate out positions and phase to rCRS
+tw_sub <- tidyr::separate_wider_delim(
+  data = tw_sub,
+  cols = pos,
+  delim = "_", 
+  names = c("prefix", "snp_pos")
+)
+
+# convert to numeric
+tw_sub$snp_pos <- as.numeric(tw_sub$snp_pos)
+
+# merge to rCRS 
+tw_sub <- dplyr::left_join(
+  x = tw_sub, 
+  y = rCRS, 
+  by = c("snp_pos" = "aln_pos")
+)
+# reorder columns 
+tw_sub <- tw_sub %>%
+  select(
+    prefix, value, snp_pos, 
+    rCRS_pos, 
+    pval_ter:scores_sub
+  )
+```
+
+```{r add_GLM_hits}
+# looking at where earlier hits fall
+GLM_candidates <- unique(
+  latprecip_core_min_clust$rCRS_pos
+)
+
+# add GLM hits information to clusters
+GT_clust_names$GLM_hit[GT_clust_names$rCRS %in% GLM_candidates] <- "y"
+
+cluster_linked_hits <- GT_clust_names %>%
+  select(
+    cluster, GLM_hit
+  ) %>%
+  distinct() %>%
+  filter(GLM_hit == "y")
+  
+```
+
+```{r merge_with_cluster_info}
+# join with cluster information (see above)
+tw_sub <- left_join(
+  x = tw_sub, 
+  y = gt_clusters[,c(-3)], 
+  by = c("rCRS_pos" = "rCRS")
+)
+
+tw_sub <- tw_sub %>% distinct()
+# add in if cluster associated with GLM candidate
+tw_sub <- left_join(
+  x = tw_sub,
+  y = cluster_linked_hits, 
+  by = "cluster"
+)
+
+tw_sub$GLM_hit[is.na(tw_sub$GLM_hit)] <- "n"
+
+# add in mtDNA loci information
+tw_sub_loci <-  left_join(
+  tw_sub, 
+  mt_loci_pos, 
+  by = join_by(
+    rCRS_pos >= Starting, 
+    rCRS_pos <= Ending
+  )
+)
+
+```
+
+```{r grouping_by_cluster}
+
+tw_sub_cluster <- tw_sub %>%
+  filter(!is.na(cluster)) %>%
+  group_by(cluster, GLM_hit) %>%
+  slice_min(pval_sub) %>%
+  select(
+    rCRS_pos, scores_sub, pval_sub, cluster, GLM_hit 
+    ) %>%
+  distinct()
+```
+
+```{r save_to_excel}
+
+openxlsx::write.xlsx(
+  x = tw_sub_cluster, 
+  file = "/results/treeWAS_output_clusters_r0.5.xlsx"
+)
+```
+
+```{r testing_distributions}
+
+tw_sub_cluster$pval_sub[tw_sub_cluster$GLM_hit == "y"]
+
+wilcox.test(
+  x = c(tw_sub_cluster$pval_sub[tw_sub_cluster$GLM_hit == "n"]), 
+  y = c(tw_sub_cluster$pval_sub[tw_sub_cluster$GLM_hit == "y"]), 
+  alternative = "greater"
+)
+```
+
+```{r density_plot_sub}
+# make plot
+ggplot2::ggplot(
+  data = tw_sub_cluster, 
+  mapping = aes( 
+    x = .data[["pval_sub"]], 
+    fill = GLM_hit
+  )
+) + geom_density(
+    alpha = 0.8
+) +
+  scale_fill_manual(
+    values = c(
+      y = "magenta4", 
+      n = "black"
+    ), 
+    labels = c(
+      y = "Significant in the GLM analysis", 
+      n = "Not significant in the GLM analysis"
+    ), 
+    name = ""
+  ) +
+  xlab(
+    "p-value from treeWAS substitution test"
+    #"Scores from treeWAS substitution test"
+  ) +
+  ylab(
+    "Density"
+  ) +
+  theme_light()+
+  theme(
+    legend.position = "bottom"
+  )
+
+# save plot
+ggplot2::ggsave(
+  filename = "/figures/treeWAS_GLM_comparison_scores_density_plot_sub.png",
+  plot = last_plot(),
+  bg = "transparent", 
+  width = 12, 
+  height = 7
+)
+```

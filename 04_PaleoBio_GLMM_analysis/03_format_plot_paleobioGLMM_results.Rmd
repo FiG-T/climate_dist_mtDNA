@@ -1,0 +1,309 @@
+---
+title: "Plot PaleoBio GLMMs"
+author: "FiG-T"
+date: "2024-11-11"
+output:
+ html_document:
+   keep_md: true
+   toc: true
+toc: true
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+This script details how to count the number of significant bioclimatic predictors, and how to plot the results. 
+
+## Libraries
+
+```{r libraries, message=FALSE}
+
+# load required libraries
+library(feather)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(tidyr)
+```
+
+```{r load palette}
+source("https://raw.githubusercontent.com/FiG-T/climate_dist_mtDNA/refs/heads/main/climate_mtDNA_colour_palettes.R") # you may beed to add on a token here to gain access. 
+
+```
+
+# Required data
+```{r required_data}
+paleobio_GLMM_scores <- feather::read_feather(
+  path = "data/feather/paleobio_GLMM_scores_08_2024.feather"
+)
+
+# mtDNA loci positioning 
+mt_loci_pos <- feather::read_feather(
+  path = "data/feather/mtDNA_loci_all_positions_classifications.feather"
+)
+
+GT_clust_names <- feather::read_feather(
+  path = "results/genotype_correlated_clusters_r0.2.feather"
+)
+```
+
+# Check data 
+
+We can check to ensure that only the relevant variables are being included in our data going forward and define the bonferroni-corrected threshold.
+
+```{r GLMM_formatting}
+
+# list the variables you want to keep 
+var_to_keep <- c(
+  "mean_T_yr_paleo", 
+  "T_seasonality_paleo", "T_wetQ_paleo", "T_dryQ_paleo", 
+  "mean_T_warmQ_paleo", "mean_T_coldQ_paleo", 
+  "precip_yr_paleo", "precip_dryQ_paleo", "precip_coldQ_paleo",
+  "lai_paleo", "endemic_area",
+  "outbreaks_area"
+)
+
+# only keep specified variables
+paleobio_GLMM_scores <- paleobio_GLMM_scores %>%
+  filter(covariate %in% var_to_keep)
+
+# determine the significance threshold: 
+alpha <- 0.01
+# count the number of SNPs tested (should be all those that passed dispersion filters in the core tests)
+n_snps_st2 <- length(unique(paleobio_GLMM_scores$rCRS_pos))
+n_snps_st2
+# calculate the number of test formulas conducted
+n_tests <- length(unique(paleobio_GLMM_scores$covariate))
+n_tests
+# calculate the bonferroni corrected threshold
+bon_threshold_st2 <- alpha/(n_snps_st2*n_tests)
+log10(bon_threshold_st2)
+```
+
+## Merging with position data
+
+As with the core models, we can add in information on where in mt genome the
+significant hits arise.
+
+```{r join_mt_loci}
+
+# combine with position data 
+paleobio_GLMM_scores <- left_join(
+  paleobio_GLMM_scores, 
+  mt_loci_pos, 
+  by = join_by(
+    rCRS_pos >= Starting, 
+    rCRS_pos <= Ending
+  )
+)
+
+# order classifications 
+paleobio_GLMM_scores$classification <- factor(
+  x = paleobio_GLMM_scores$classification, 
+  levels = mt_classification_levels
+)
+
+# order loci positions
+paleobio_GLMM_scores$Map.Locus <- factor(
+  x = paleobio_GLMM_scores$Map.Locus, 
+  levels = c(
+    "MT-ATT", "MT-CR",  "MT-7SDNA", # Attachment site and control region
+     "MT-TFX" , "MT-TFY", "MT-TAS" , "MT-TAS2",
+    "MT-HV1" , "MT-HV2", "MT-HV3", 
+    "MT-OHR", "MT-CSB1",  "MT-CSB2" ,
+    "MT-ND1", "MT-ND2", "MT-ND3", "MT-ND4","MT-ND4L", "MT-ND5", "MT-ND6",
+    "MT-CYB",
+    "MT-CO1","MT-CO2", "MT-CO3", 
+    "MT-ATP6", "MT-ATP8",
+    "MT-RNR1", "MT-RNR2", 
+    "MT-SHLP3", "MT-SHLP6",
+    "MT-TT", "MT-TG", "MT-TR", "MT-TH" , "MT-TA", "MT-TI",
+    "MT-NC3"
+  )
+)
+
+```
+
+## Summary Metrics
+
+```{r format_sig_scores}
+
+# Calculate the number of SNPs for which each covariate is significant
+paleobio_GLMM_N <- paleobio_GLMM_scores %>%
+  filter(`Pr..Chisq.` <= bon_threshold_st2) %>% # bonferroni corrected pvalue
+  filter(!classification %in% c("HVS", "OH", "ATT", "NA", "SHLP", "CSB", "mtTF1") ) %>%
+  filter(! is.na(classification)) %>%
+  group_by(covariate) %>%
+  reframe( 
+    N = n()
+  ) %>%
+  distinct()
+
+# order the levels 
+paleobio_GLMM_N$covariate <- factor(
+  x = paleobio_GLMM_N$covariate, 
+  levels = var_to_keep
+)
+````
+
+```{r all_pos_min_st2}
+
+paleobio_GLMM_min <- paleobio_GLMM_scores %>%
+  #filter(`Pr..Chisq.` <= bon_threshold_st2) %>%
+  filter(!classification %in% c("HVS", "OH", "ATT", "NA", "SHLP", "CSB", "mtTF1") ) %>%
+  filter(! is.na(classification)) %>%
+  group_by(rCRS_pos) %>%
+  slice_min(log10_scores) %>%
+  select(
+    rCRS_pos, logLik, `Pr..Chisq.`,
+    covariate, value, log10_scores,
+    Map.Locus, classification, snp_pos
+  ) %>%
+  distinct()
+
+# add labels about whether the alternative model significantly outperformed the null 
+paleobio_GLMM_min$sig[paleobio_GLMM_min$Pr..Chisq.<= bon_threshold_st2]<- "y"
+paleobio_GLMM_min$sig[paleobio_GLMM_min$Pr..Chisq.> bon_threshold_st2]<- "n"
+```
+
+```{r save_paleobio_candidates }
+feather::write_feather(
+  x = paleobio_GLMM_min, 
+  path = "data/feather/paleobio_GLMM_min_12var_11_2024.feather"
+)
+```
+
+```{r cluster_sig_scores}
+
+# join to cluster information
+paleobio_GLMM_min_clust <- left_join(
+  paleobio_GLMM_min, 
+  GT_clust_names, # see genotype_clusters.Rmd
+  by = join_by("rCRS_pos"=="rCRS")
+)
+
+# take the most significant significant variant per cluster
+paleobio_GLMM_min_clust <- paleobio_GLMM_min_clust %>%
+  filter(sig == "y") # to only include significant sites
+  group_by(cluster) %>%
+  slice_min(log10_scores)
+  
+feather::write_feather(
+  x = paleobio_GLMM_min_clust, 
+  path = "/results/paleobio_GLMM_min_clust.feather"
+)
+
+# count the number of paleo hits - Note: this depends on which clusters (r2 > 0.2 or r2 > 0.5) you use. 
+length(unique(paleobio_GLMM_min_clust$rCRS_pos))
+
+# count the number of times a covariate is the strongest hit: 
+paleobio_GLMM_min_N <- paleobio_GLMM_min_clust %>%
+  group_by(covariate) %>%
+  reframe(
+    N = n()
+  ) %>%
+  distinct() 
+  
+# order these levels 
+paleobio_GLMM_min_N$covariate <- factor(
+  x = paleobio_GLMM_min_N$covariate, 
+  levels = var_to_keep
+)
+
+
+paleobio_GLMM_summaries <- list(
+  paleobio_GLMM_N #,
+  paleobio_GLMM_min_N
+  )
+
+```
+
+## Plotting results
+
+```{r GLMM_summary_plot}
+
+to_plot <- c(
+  "N", "N"
+  )
+
+
+for(i in seq_along(paleobio_GLMM_summaries)) {
+  
+  table <- lhf_st2_GLMM_summaries[[i]]
+  
+  print(
+    ggplot2::ggplot(
+      data = table, 
+      mapping = ggplot2::aes(
+        x = covariate, 
+        y = .data[[to_plot[i]]], 
+        fill = covariate
+      )
+    ) +
+      geom_col(
+        position = position_dodge2(0.2)
+      ) +
+      scale_fill_manual(
+        values = env_var_palette
+      ) +
+      #geom_text(
+      #  mapping = aes(
+      #    label = N
+      #  ), 
+      #  size = 5,
+      #  nudge_y = 1
+      #) +
+      ylim(
+        #c(0,5)
+        c(0,12)
+      ) +
+      ylab(
+        "Number of times assigned as the \n 'bioclimatic predictor' "
+      ) +
+      xlab(
+        ""
+      ) +
+      scale_x_discrete(
+        labels=c(
+          "precip_yr_paleo" = "Annual\n Precipitation", 
+          "mean_T_yr_paleo" = "Mean Annual\n Temperature",
+          "T_seasonality_paleo" = "Temperature\n Seasonality", 
+          "T_wetQ_paleo" = "Mean Temperature\n of the Wettest\n Quarter",
+          "mean_T_warmQ_paleo" = "Mean Temperature\n of the Warmest\n  Quarter", 
+          "precip_dryQ_paleo" = "Mean Precipitation\n of the Driest\n  Quarter", 
+          "lai_paleo" = "Leaf Area\n Index"
+        )
+      ) +
+      theme_minimal(
+      ) +
+      ggplot2::theme(
+        axis.text.x = element_text(
+          angle = 90,
+          vjust = 0.5,
+          hjust = 1,
+          size = 16
+        ), 
+        axis.title.y = element_text(
+         size = 16, 
+         hjust = 0.5
+        ),
+        legend.position = "none", 
+        axis.text.y = element_text(
+          size = 12
+        )
+      )
+  )
+}
+```
+
+```{r save_paleo_hits}
+ggplot2::ggsave(
+  filename = "figures/stage2_plots/lhf_st2_GLMM_N_mins_noLAT__clustered_r0.2_11_2024_transparent.png",
+  plot = last_plot(),
+  bg = "transparent", 
+  width = 11, 
+  height = 9
+)
+```
+

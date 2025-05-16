@@ -1,0 +1,375 @@
+---
+title: "Allele Frequencies vs. PaleoBio predictor"
+author: "FiG-T"
+data: "`r Sys.Date()`"
+output: 
+  html_document: 
+    keep_md: yes
+    toc: yes
+toc: TRUE
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+```{r libraries}
+library(ggplot2)
+library(stringr)
+library(dplyr)
+library(tidyr)
+#library(tidytree)
+library(ape)
+
+```
+
+```{r load palette}
+source("https://raw.githubusercontent.com/FiG-T/climate_dist_mtDNA/refs/heads/main/climate_mtDNA_colour_palettes.R") # you may beed to add on a token here to gain access. 
+
+```
+
+```{r required_data}
+latprecip_core_min_clust <- feather::read_feather(
+  path = "results/feather/core_GLM_scores_mins_ds_clusteredr0.2_11_2024.feather" # check date
+)
+latprecip_candidates_rcrs <- unique(latprecip_core_min_clust$rCRS_pos)
+
+gt_meta_pc_ds <- feather::read_feather(
+  path = "data/feather/gt_meta_PCs_DOWNSAMPLED.feather"
+)
+
+gt_pc_ds_paleobio_meta <- feather::read_feather(
+  path = "data/feather/paleobio_meta_pc_ds_subset_full_08_2024.feather"
+)
+
+paleobio_GLMM_scores <- feather::read_feather(
+  path = "data/feather/paleobio_GLMM_scores_08_2024.feather"
+)
+
+paleobio_GLMM_min_clust <- feather::read_feather(
+  path = "/results/paleobio_GLMM_min_clust.feather"
+)
+
+```
+
+## Calculating Allele Frequency by Country
+```{r filter_st2_meta}
+core_clust_candidates <- str_c(
+  "pos_", 
+  sort(as.numeric(
+    c(unique(latprecip_core_min_clust$snp_pos))
+  ))
+)
+
+core_clust_candidates_rCRS <- str_c(
+  "pos_", 
+   sort(as.numeric(
+     c(unique (latprecip_core_min_clust$rCRS_pos))
+   ))
+)
+
+gt_pc_ds_paleobio_meta_hits <- gt_pc_ds_paleobio_meta %>%
+  select(
+    acc:lai_paleo, 
+    core_clust_candidates
+  )
+```
+
+```{r calculate_AF}
+# convert to long format 
+AF_long <- pivot_longer(
+  data = gt_pc_ds_paleobio_meta_hits, 
+  cols = matches("pos_.*"), 
+  names_to = "position", 
+  values_to = "genotype"
+)
+
+# group by country and SNP
+AF_long <- AF_long %>%
+  group_by(
+    iso3, position 
+  ) %>%
+  filter(genotype %in% c(0, 1) ) %>%  # only include first 2 alleles
+  reframe(
+    continent = continent,
+    maf = mean(genotype)
+  ) %>%
+  distinct()
+```
+
+Use the labels defined above to replace SNP positions with rCRS aligned values
+
+```{r rename_pos_af}
+
+for(i in seq_along(core_clust_candidates)) {
+  
+  AF_long <- AF_long %>%
+    mutate(
+      position = str_replace_all(
+        position, 
+        pattern = core_clust_candidates[i], 
+        replacement = core_clust_candidates_rCRS[i]
+      )
+    )
+}
+
+AF_long$position <- factor(
+  x = AF_long$position, 
+  levels = c(core_clust_candidates_rCRS)
+  
+)
+```
+
+It would be interesting to see allele frequencies vs environmental metrics:
+
+```{r format_metadata}
+# add in paleo data 
+AF_long <- left_join(
+  x = AF_long,
+  y = paleo_wcvp_outbreaks %>%
+        select(iso3,mean_T_yr_paleo:lai_paleo) %>%
+        distinct(),
+  by = c("iso3")
+)
+```
+
+```{r country_N}
+
+country_N <- gt_pc_ds_paleobio_meta %>%
+  select(acc,iso3) %>%
+  distinct() %>%
+  group_by(iso3) %>%
+  reframe(
+    N = n(), 
+    logN = log(N), 
+    sqrtN = sqrt(N)
+  )
+
+AF_long <- left_join(
+  x = AF_long, 
+  y = country_N, 
+  by = "iso3"
+)
+
+```
+
+```{r save_output_table}
+write.csv(
+  x = AF_long, 
+  file = "/results/candidate_variants_AF_paleobio.csv"
+)
+```
+
+```{r af_env_plotter, warning=FALSE, message=FALSE}
+
+af_env_plotter <- function(
+        input, 
+        positions, 
+        scores_input,
+        x_axis_label = "", 
+        plot_line_fit = "lm", 
+        legend_position = "bottom"
+) {
+  
+  # load in data 
+  data <- input
+  
+  # load in score data
+  scores <- scores_input
+  
+  scores$labels <- str_c(
+    "pos_", 
+    scores$rCRS_pos
+  )
+  
+  for (i in positions) {
+    
+    message(i)
+    
+    # filter for a specific position
+    data_filtered <- data %>%
+      filter(position == i)
+    
+    scores_filtered <- scores %>%
+      filter(labels == i )
+    
+    env_var <- unique(scores_filtered$covariate)
+    
+    message(env_var)
+    
+    if(unique(scores_filtered$sig == "y")) {
+      sig_note <- "*"
+    } else { 
+      sig_note <- ""
+    }
+    
+    message(sig_note)
+    
+    y_label_pos <- str_replace(
+      string = i, 
+      pattern = "pos_", 
+      replacement = "m."
+    )
+    
+    if (x_axis_label == "") {
+      x_label <- paste0(
+          env_var, 
+          sig_note
+        )
+    } else{
+      x_label <- paste0(
+        x_axis_label, sig_note
+      )
+    }
+    
+    plot <- ggplot(
+      data = data_filtered, 
+        mapping = aes(
+          y = maf, 
+          x = .data[[env_var]] , 
+          #fill = continent, 
+          colour = continent
+       )
+      ) +
+      geom_smooth(
+        inherit.aes = FALSE,
+        mapping = aes(
+          y = maf, 
+          x = .data[[env_var]]
+        ), 
+        method = plot_line_fit, 
+        colour = "black", 
+        #se = FALSE,
+        alpha = 0.75
+      ) +
+      geom_point(
+        aes(
+          size = N
+          ),
+        alpha = 0.9
+      ) +
+      geom_text(
+        mapping = aes(
+          label = iso3
+        ), 
+       #nudge_x = 45, 
+        size = 2, 
+       colour = "black"
+      ) +
+      #scale_fill_manual(
+      #  values = FiGT_continent_palette, 
+      #  name = "Continent"
+      #) +
+      scale_colour_manual(
+        values = FiGT_continent_palette,
+        name = "Continent"
+      ) +
+      scale_size(
+        range = c(2,20), 
+        name = "Sequences per Country"
+      ) +
+      scale_x_continuous(
+        breaks = scales::pretty_breaks(n=10)
+      ) +
+      ylab(
+        paste0(
+          "Allele Frequency for ", y_label_pos
+        )
+      ) +
+      xlab(
+        x_label
+      ) +
+      theme_light(
+      ) +
+      theme(
+        axis.text.x = element_text(
+          angle = 0, 
+          size = 10
+        ), 
+        axis.title = element_text(
+          size = 15
+        ), 
+        legend.position = legend_position,
+        legend.text = element_text(
+          size = 12
+        ),
+        legend.title = element_text(
+          size = 15
+        )
+      )
+  
+    # print plot
+    print(plot)
+  
+  } # close loop
+  
+}
+
+```
+
+```{r make_plots}
+
+for ( i in seq_along(core_clust_candidates_rCRS)) {
+  
+  position <- core_clust_candidates_rCRS[i]
+  
+  af_env_plotter(
+    input = AF_long, 
+    positions = position, 
+    scores_input = paleobio_GLMM_scores,
+    plot_line_fit = "loess",
+    legend_position = "none"
+  )
+  
+  path <- paste0(
+    "/figures/AF_vs_Env/lhf_EnvvsAF_scatters_02_2025_", 
+    core_clust_candidates_rCRS[i], 
+    ".png"
+  )
+  
+  ggplot2::ggsave(
+    filename = path,
+    plot = last_plot(),
+    bg = "transparent", 
+    width = 10, 
+    height = 6
+)
+  
+  
+}
+```
+
+```{r check_overlap_snps}
+# combine core and stage 2 results 
+combined_st1_st2_GLMs <- full_join(
+  x = latprecip_core_min_clust, 
+  y = paleobio_GLMM_min_clust %>%
+    select(
+      rCRS_pos, covariate
+    ) %>%
+    distinct(), 
+  by = "rCRS_pos"
+)
+
+core_st2_hits <- sort(c(unique(combined_st1_st2_GLMs$rCRS_pos)))
+
+st2_hits <- c(unique(paleobio_GLMM_min_clust$rCRS_pos))
+
+# select the positions where there is no significant stage 2 hit
+combined_st1_st2_GLMs <- combined_st1_st2_GLMs %>%
+  filter(is.na(null_chisq)) %>%
+  select(rCRS_pos) %>%
+  distinct()
+
+sort(combined_st1_st2_GLMs$rCRS_pos)
+```
+
+This shows that there are 14 SNPs (199, 239, 3918, 4580, 5046, 5460, 6455, 6734,
+8701, 9947, 9950, 11944, 12414 & 14212) which are not detected as being
+significant in the second stage of modelling. This could be as the Bonferroni
+corrected threshold is higher (as there are many more tests) or that the
+interact between latitude and precipitation is specifically important in the
+core hits.
+
+Three sites (rCRS 980, 9667 & 9932) are significant in the second stage of hits
+but were not detected in the core models.

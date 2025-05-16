@@ -1,0 +1,241 @@
+---
+title: "Plot LatPrecip GLMM results"
+author: "FiG-T"
+date: "2024-11-11"
+output:
+ html_document:
+   keep_md: true
+   toc: true
+toc: true
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+# Introduction
+This script outlines the code required to create the plots pertaining to the LatPrecip GLMM analysis
+
+## Libraries
+```{r libraries}
+library(feather)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+```
+
+## Required data 
+
+```{r required_data}
+# formatted table (see 2_run_latprecipGLMMS.Rmd)
+core_GLM_scores_formatted_phased <- feather::read_feather(
+  path = "results/feather/core_GLM_scores_formatted_phased_ds_08_2024.feather" 
+)
+
+# mtDNA loci positioning 
+mt_loci_pos <- feather::read_feather(
+  path = "data/feather/mtDNA_loci_all_positions_classifications.feather"
+)
+
+# just the candidate loci: 
+latprecip_core_min_clust <- feather::read_feather(
+  path = "results/feather/core_GLM_scores_mins_ds_clusteredr0.2_11_2024.feather" # check date
+)
+```
+
+```{r load palette}
+source("https://raw.githubusercontent.com/FiG-T/climate_dist_mtDNA/refs/heads/main/climate_mtDNA_colour_palettes.R") # you may beed to add on a token here to gain access. 
+
+```
+
+# "Manhattan" plot 
+
+The Manhattan plot is a classic plot used to show the significance of each SNP - this plot will look a little sparse as we only have the mtDNA (and therefore hundreds not millions of SNPs).  This plot is used to show the comparison between the null and alternate models in the LatPrecip analysis. 
+
+The threshold of significance here is the alpha value (0.01) divided by the
+number of SNPs that pass the dispersion filters multiplied by the number of
+tests (in this instance 1). This is the same as the Bonferroni corrected
+p-value.
+
+```{r manhattan_null, warning=FALSE}
+
+# define the alpha threshold for significance
+alpha <- 0.01 
+
+n_snps <-  length(unique(core_GLM_scores_formatted_phased$rCRS_pos)) # change depending on the output from format_core_GLM_scores
+
+bon_threshold_null <- alpha/(n_snps*1) # as only 1 test performed per SNP in this test. 
+
+ggplot2::ggplot(
+  data = core_GLM_scores_formatted_phased, 
+  mapping = aes(
+    x = rCRS_pos,
+    y = log10(null_chisq)
+  )
+) +
+  geom_point(
+    colour = "darkorchid", 
+    size = 3
+  ) +
+  geom_line(
+    y = -1*log10(bon_threshold_null), 
+    colour = "black", 
+    linewidth = 1,
+  ) + 
+  scale_x_continuous(
+    breaks = seq(0,17000, 1000)
+  ) +
+  ylim(c(1, -18)
+  ) +
+  ylab(
+    "Logged 10 P-value"
+  ) +
+  xlab(
+    "Position (relative to rCRS)"
+  ) +
+  geom_segment(
+    data = mt_loci_pos,
+    ggplot2::aes(
+      x = Starting, 
+      #x = aln_start,
+      xend = Ending, 
+      #xend = aln_end,
+      y = 0.5, 
+      yend = 0.5, 
+      col = classification
+    ),
+    linewidth = 3, 
+    alpha = 0.7, 
+    position = ggplot2::position_jitter(
+      height = 0.1
+    )
+  ) +
+  scale_colour_manual(
+    values = c(
+      mtDNA_palette
+    )
+  ) +
+  theme_minimal()+
+  theme(
+    legend.position = "none", 
+    axis.line = ggplot2::element_line(
+      linewidth = 1, 
+      colour = "black"
+    ), 
+    plot.background = ggplot2::element_rect(
+      fill = "white"
+    ), 
+    panel.grid = ggplot2::element_line(
+      colour = "white", 
+      linetype = "dotdash"
+    ),
+    panel.grid.major.x = ggplot2::element_line(
+      colour = "snow4", 
+      linetype = "dashed"
+    ), 
+    legend.background = ggplot2::element_rect(
+      fill = "white"
+    ), 
+    axis.title = element_text(
+      size = 20
+    ),
+    axis.text = element_text(
+      size = 14
+    )
+  )
+```
+
+```{r save_core_manhattan_plot}
+ggplot2::ggsave(
+  filename = "figures/lhf_core_GLM_08_2024.png",
+  plot = last_plot(),
+  bg = "transparent", 
+  width = 11, 
+  height = 7
+)
+```
+
+# Dotplot
+
+The dotplot can be used to summarise lots of information in a smaller space - and allows us to focus on the candidate variants. 
+
+For consistency, we order the loci classifications into helpful order: 
+
+```{r order_factors}
+
+# combine the list of significant SNPs with the table showing the number of SNPs at each locus
+latprecip_core_min_clust$Map.Locus <- factor( # arrange the locus into the order you want to plot them in
+  x = latprecip_core_min_clust$Map.Locus, 
+  levels = c(
+    "MT-ATT", "MT-CR", # Attachment site and control region
+    "MT-7SDNA", "MT-HV1", "MT-HV2", 
+    "MT-OHR",  "MT-TAS2",  "MT-TFX" ,
+    "MT-ND1", "MT-ND2", "MT-ND3", "MT-ND4", "MT-ND5", "MT-ND6",
+    "MT-CYB",
+    "MT-CO1","MT-CO2", "MT-CO3", 
+    "MT-ATP6", "ATP8",
+    "MT-RNR1", "MT-RNR2",
+    "Humanin", "MT-SHLP3", "MT-SHLP6", 
+    "MT-TT", "MT-TG", "MT-TR", "MT-TH" 
+  )
+)
+```
+
+```{r hits_dotplot}
+  
+ggplot2::ggplot(
+  data = latprecip_core_min_clust, # using the significant hits 
+  mapping = aes(
+    x = as.factor(rCRS_pos), 
+    y = Map.Locus, 
+    colour = log10(null_chisq)
+  )
+)  + geom_tile(
+    mapping = aes(
+      fill = classification,
+    ), 
+    alpha = 0.75,
+    colour = "white",
+    show.legend = TRUE
+  )  +
+  scale_fill_manual(
+    values = mtDNA_palette
+  ) +
+  geom_point(
+  size = 5
+) +
+  xlab(
+    "SNP rCRS postion"
+  ) +
+  ylab(
+    "mtDNA locus"
+  ) +
+  labs(
+    colour = "Log10 Chisq Score"
+  )+
+  theme_light(
+  ) + 
+  theme(
+    axis.text.x = element_text(
+      angle = 90, 
+      vjust = 0.5
+    ), 
+    legend.title = element_text(
+      
+    )
+  ) 
+```
+
+```{r save_multiple_dotplot}
+ggplot2::ggsave(
+  filename = "figures/lhf_hits_loci_dotplot_r0.2_11_2024.png",
+  plot = last_plot(),
+  bg = "transparent", 
+  width = 11, 
+  height = 7
+)
+```
+
+
+For PaleoBio and supplementary plots, please refer to the respective directories. 

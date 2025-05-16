@@ -1,0 +1,189 @@
+---
+title: "TreeWAS preparation"
+author: "FiG-T"
+date: "`r Sys.Date()`"
+output:
+ html_document:
+   keep_md: true
+   toc: true
+toc: true
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+# TreeWAS
+
+Feedback on the project has suggested that supplementary analysis of the data
+using a more phylogenetic approach would strengthen the results. The **treeWAS**
+program will be used to conduct this approach.
+
+## Libraries
+
+```{r libraries}
+
+## install treeWAS from github:
+#remotes::install_github(
+#  build_vignettes = FALSE, # installing vignettes not working
+#  force = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ape)
+library(treeWAS)
+
+library(ggplot2)
+
+
+```
+
+## Necessary data
+
+```{r required_data, warning=FALSE}
+gt_meta_pc_ds <- feather::read_feather(
+  path = "data/feather/gt_meta_PCs_DOWNSAMPLED.feather"
+)
+
+FastTree_full <- ape::read.tree(
+  file = "data/mafft_aln_filtered_FastTree_02_2024_rooted.tree"
+  # tree generated above 
+)
+
+# load in rCRS phasing data 
+rCRS <- feather::read_feather(
+  path = "~/Documents/data/lhf_d/feather/rCRS_phasing.feather"
+)
+
+GT_clust_names <- feather::read_feather(
+  path = "results/genotype_correlated_clusters_r0.2.feather"
+)
+```
+
+Filter to only include biallelic alleles/individuals and convert to a matrix
+
+```{r filter_biallelic_sites}
+non_bi_sites <- c()
+bi_sites <- c()
+for (i in 26:ncol(gt_meta_pc_ds)){
+  
+  col <- names(gt_meta_pc_ds)[i]
+  
+  x <- length(unique(gt_meta_pc_ds[[col]]))
+  
+  if (x <= 2) {
+    bi_sites <- append(bi_sites, col)
+  }
+
+}
+tw_gt_bi <- gt_meta_pc_ds %>%
+  select(
+    "samples_og",
+    bi_sites
+  )
+
+# this gives the list that are not-biallelic - these are in the control region - for consistency with the GLMM analysis we remove individuals who are triallelic for that site. 
+tw_gt_bi <- gt_meta_pc_ds
+
+for (i in 26:ncol(tw_gt_bi)){ # for all positions
+  tw_gt_bi <- tw_gt_bi %>%
+    filter_at(
+      vars(i), # select position
+      all_vars(. == 1 | . == 0) # only include rows where the gt is 1 or 0
+    )
+}
+
+nrow(tw_gt_bi)
+
+# save sample names (which match tree) as a vector
+rownames_gt <- tw_gt_bi$samples_og
+
+length(rownames_gt)
+
+# convert to a matrix (from a tibble)
+tw_gt_bi <- as.matrix(tw_gt_bi[,c(38:ncol(tw_gt_bi))])
+
+# define rownames
+rownames(tw_gt_bi) <- rownames_gt
+
+```
+
+Selecting an environmental variable of interest:
+
+Initially using Latitude as a proxy:
+
+```{r environmental_phenotypes}
+# latitude
+phen_lat <- c(gt_meta_pc_ds$lat)
+names(phen_lat) <- c(gt_meta_pc_ds$samples_og) # add sample names 
+phen_lat <- phen_lat[names(phen_lat) %in% rownames_gt] #remove filtered indv. 
+
+phen_lat_rank <- rank(
+  phen_lat, 
+  ties.method = "average"
+)
+hist(phen_lat_rank) 
+
+```
+
+```{r re_pruning_tree}
+tips_to_drop <- gt_meta_pc_ds[c(gt_meta_pc_ds$samples_og) %in% c(rownames_gt) == FALSE,]$samples_og
+
+re_pruned_tree <- drop.tip(
+  FastTree_full, 
+  tips_to_drop
+)
+length(re_pruned_tree$tip.label)
+```
+
+```{r edit_0_branch_lengths}
+
+# set very small branches to 0 
+re_pruned_tree$edge.length[re_pruned_tree$edge.length <= 0] <- 1e-8
+unique(sapply(tw_gt_bi, unique))
+
+
+re_pruned_tree <- ape::makeNodeLabel(re_pruned_tree)
+
+# make phenotype label
+phen_lat <- phen_lat[re_pruned_tree$tip.label]
+
+length(phen_lat)
+length(re_pruned_tree$tip.label)
+length(rownames(tw_gt_bi))
+```
+
+```{r run_treeWAS}
+treeWAS_output_lat_bonf_p0.05 <- treeWAS::treeWAS(
+  snps = tw_gt_bi,              # created above
+  phen = phen_lat,           # using non-ranked data 
+  tree = pruned_tree,           # created above
+  phen.type = "continuous",        # specify that the 'phenotype' is a continous variable
+  test = c(                       # specify which association tests to run
+  #  "terminal",       # broad patterns based on branch tips only
+  #  "simultaneous",   # branch specific changes in phen and geno
+    "subsequent"#,     # broad patterns from branch nodes and tips
+    #"cor"             # looks for "simple" correlations
+  ), 
+  correct.prop = TRUE,       # correct for skewed phenotype distributions
+  #mem.lim = TRUE,
+  #snps.reconstruction = "ML",  # how to construct the ancestral state data
+  #snps.sim.reconstruction = "ML",
+  phen.reconstruction = "ML", 
+  na.rm = TRUE, 
+  p.value = 0.05,      # the significance threshold to use (same here as GLM)
+  p.value.correct = "bonf", # how to correct for multiple testing
+  plot.tree = FALSE, 
+  plot.dist = FALSE#, 
+  #snps.assoc = sig_snps_note  # snps to be marked in plots 
+)
+```
+
+```{r save_raw_data}
+# save the list output from treeWAS as a .RData file
+save(
+  treeWAS_output_lat_bonf_p0.05, 
+  file = "results/treeWAS_RAW_output_lat_bonf_p0.05.RData"
+)
+```

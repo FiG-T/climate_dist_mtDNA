@@ -1,0 +1,123 @@
+---
+title: "Merge genetic and PaleoBio data"
+author: "FiG-T"
+date: "2024-11-11"
+output:
+ html_document:
+   keep_md: true
+   toc: true
+toc: true
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+# Introduction 
+
+In addition to performing GLMM analysis using latitude and annual precipitation from WorldClim, we also conducted GLMM analysis using reconstructed Paleobioclimatic variables, alongside estimates of plant biodiverstiy and outbreak load.  For details on how these datasets were curated, please see extract_paleo_wcvp_outbreak_variables.Rmd. 
+
+## Libraries 
+```{r libraries, message=FALSE}
+
+# load required libraries
+library(feather)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(tidyr)
+```
+
+## Required data 
+
+```{r import data}
+
+# load in the data with the same downsampled individuals as before... 
+gt_meta_pc_ds <- feather::read_feather(
+  path = "data/feather/gt_meta_PCs_DOWNSAMPLED.feather"
+)
+
+# load in the additional variable 
+paleo_wcvp_outbreaks <- feather::read_feather(
+  path = "data/meta/lhf_meta_paleo_wcvp_outbreaks_05_2024.feather"
+)
+```
+
+We can now combine these datasets: 
+
+```{r combine_extra_metadata}
+
+# merge with genotype data
+gt_pc_ds_paleobio_meta <- left_join(
+  x = gt_meta_pc_ds,  # using the same subset of downsampled individuals as before. 
+  y = paleo_wcvp_outbreaks, # adding in the curated additional metadata
+  by = "iso3"
+)
+
+# reorder columns
+gt_pc_ds_paleobio_meta <- gt_pc_ds_paleobio_meta %>%
+  select(
+    acc:precip_seasonality, area, 
+    native:outbreaks_area, 
+    mean_T_yr_paleo:lai_paleo, 
+    pos_157:pos_16285 # note columns now in odd order...
+  )
+
+# fix names
+names(gt_pc_ds_paleobio_meta)[c(7, 12)] <- c("country", "iso2")
+```
+
+These new variables all also need to be scaled before use in the GLMM.
+
+```{r scale_paleobio_meta}
+
+for (x in c(25:42)){ # check that these align with the right columns
+  
+  col <- names(gt_pc_ds_paleobio_meta)[x]
+  
+  gt_pc_ds_paleobio_meta[[col]] <- scale(gt_pc_ds_paleobio_meta[[col]])
+}
+```
+
+```{r sort_column_names}
+# get names 
+names_paleobio_meta <- names(gt_pc_ds_paleobio_meta)
+
+# create vector of position names
+names_paleobio_meta_pos <- names_paleobio_meta[c(43:length(names_paleobio_meta))]
+# remove the pos_ prefix
+names_paleobio_meta_pos <- stringr::str_replace(
+  string = names_paleobio_meta_pos, 
+  pattern = "pos_", ""
+)
+
+# sort into order
+names_paleobio_meta_pos <- sort(
+  as.numeric(
+    names_paleobio_meta_pos
+  )
+)
+
+# add in the prefix
+names_paleobio_meta_pos <- str_c(
+  "pos_", 
+  names_paleobio_meta_pos, 
+  sep = ""
+)
+
+# reorder the columns
+gt_pc_ds_paleobio_meta <- gt_pc_ds_paleobio_meta %>%
+  select(
+    names(gt_pc_ds_paleobio_meta[c(1:42)]), 
+    names_paleobio_meta_pos
+  )
+
+```
+
+```{r save_st_metafile}
+
+feather::write_feather(
+  x = gt_pc_ds_paleobio_meta, 
+  path = "feather/paleobio_meta_pc_ds_subset_full_08_2024.feather"
+)
+```

@@ -1,0 +1,383 @@
+---
+title: "Run PaleoBio GLMMs"
+author: "FiG-T"
+date: "2024-11-11"
+output:
+ html_document:
+   keep_md: true
+   toc: true
+toc: true
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+Here we take the same approach as the LatPrecip GLMMs, but replace the alternative model from before with 1 of 12 different alternative models (10 reconstructed paleoclimate variables, 1 plant biodiversity estimate, 1 pathogen load estimate). 
+
+## Libraries
+
+```{r libraries, message=FALSE}
+
+# load required libraries
+library(feather)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(tidyr)
+library(lme4)
+library(parallel)
+```
+
+
+# Required data
+```{r required_data}
+gt_pc_ds_paleobio_meta <- feather::read_feather(
+  path = "data/feather/paleobio_meta_pc_ds_subset_full_08_2024.feather"
+)
+
+rCRS <- feather::read_feather(
+  path = "data/feather/rCRS_phasing.feather"
+)
+```
+
+
+# Required functions 
+
+To conduct this analysis, we use a tweaked version of the same function used to perform the LatPrecip GLMM analysis that is capable of comparing multiple test formulae to a single null. 
+
+```{r GLM_multi_scorer_function}
+
+# define function for later use
+GLM_multi_scorer <- function(
+        input,  # the data to use
+        start_col = 43, # where the genotype information starts
+        col_to_use = "NULL",
+        test_formulas = "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + lat + precip_yr ", 
+        null_formula = "~ PC1 + PC2 + PC3 + PC4 + (1|iso2)", 
+        output_file = 1,
+        format_table = FALSE # should the output be returned as a list (default) or a table?
+        
+  ){
+  
+  library(dplyr)
+  
+  # define columns to use
+  if (col_to_use[1] == "NULL") { 
+    col_pos <- c(
+      start_col:ncol(input)
+    ) 
+  } else {
+    col_pos <- col_to_use
+  }
+  
+  chisq_scores <- list()  # initiate an empty list 
+  
+  # start loop
+  for (i in col_pos){  # for each column with genotype data
+    
+    glm_gt_bi <- input %>%
+      filter_at(
+        vars(i), 
+        all_vars(. == 1 | . == 0)  # only include 2 alleles
+      )
+    
+    message( paste(
+      nrow(glm_gt_bi), 
+      " columns in dataset"
+    )
+    )
+    
+    # select position
+    snp <- names(  # test data without 2s... 
+      glm_gt_bi
+    )[i]
+    
+    message(snp)
+    
+    snp_pos <- stringr::str_extract(  # define the SNP being modelled
+      string = snp, 
+      pattern = "\\d+"
+    )
+    
+    message(snp_pos)
+    
+     # create Null formula
+    formula_null <- as.formula(
+      paste(
+        snp, null_formula # combine the NULL formula from above with the column with SNP data. 
+      )
+    )
+    
+    # create null model with 
+    null_mod <- lme4::glmer( 
+      data = glm_gt_bi,
+      formula = formula_null ,
+      family = "binomial",  # as the genotype data is either 1 or 0 
+      control = lme4::glmerControl(
+        optimizer = "bobyqa", 
+        optCtrl = list(maxfun = 1000000)
+      )
+    )
+    #print(null_mod)
+    
+    #print(anova(null_mod))
+    
+    chi_sqs <- list() # initiate and empty list
+    
+    for (i in seq_along(test_formulas)){ # for each test formula... 
+      
+      tryCatch({  # open a catch test
+      
+      formula <- as.formula(
+        paste(
+          snp, test_formulas[i] # pair with SNP under investigation
+        )
+      )
+      
+      # run model
+      mod <- lme4::glmer( 
+        data = glm_gt_bi,
+        formula = formula ,
+        family = "binomial", 
+        control = lme4::glmerControl(
+          optimizer = "bobyqa", 
+          optCtrl = list(maxfun = 1000000)
+        )
+      )
+      
+      #print(mod)
+      #print(summary(mod))
+      
+      # compare null and full model 
+      null_df <- as.data.frame(
+        anova(
+          null_mod, 
+          mod, 
+          test = "Chisq"
+        )
+      )
+      
+      glm_overdisp <- overdisp_fun(mod)
+      
+      #print(null_df)
+      
+      chisq_df <- cbind( 
+        # bind the anova together to the SNP position and the formula being used. 
+        null_df, 
+        snp_pos,
+        glm_overdisp[2],
+        test_formulas[i] 
+      ) 
+      
+      chi_sqs[[i]] <- chisq_df # add this table into the intiated list
+
+      
+      message("anova scores created")
+      
+
+      #print(chi_sqs[[i]])
+      
+      }, 
+      error = function(e) {  # define what to do if an error occurs
+      message( 
+        paste(
+          "Model did not converge for", test_formulas[i], "- Skipping to the next test formula. 
+          --------------------------------------------------------"
+        )
+      )
+    }
+  ) # close Catch loop
+      
+    } # close test formula loop
+    
+    # add this list of tables (for each formula per snp) to a larger list 
+    chisq_scores[[snp]] <- chi_sqs 
+    
+    message("Scores added into big list")
+    
+    message(
+      paste(
+        snp , " - Chi Squared scores calculated"
+      )
+    )
+    
+    chisq_scores_table <- bind_rows(chi_sqs)
+    #print(
+    #  str(chisq_scores_table)
+    #)
+    #print(head(chisq_scores_table))
+    
+    if (output_file != 1) {
+    write.csv(
+      chisq_scores_table, 
+      file = output_file, 
+      append = TRUE, 
+      sep = "\t", 
+      row.names = FALSE,
+      col.names = !file.exists(output_file)  # Only add column names if the file does not exist yet
+    )
+      
+    }
+  
+  
+  }
+  message("All Chi Squared Scores returned")
+  
+  if (format_table == TRUE) { 
+    # if table output is specified merge the lists together... 
+    chisq_scores <- bind_rows(chisq_scores)
+  }
+  
+  return(chisq_scores)
+  
+  #if(format_table == FALSE){
+  #  return(chisq_scores_patr)
+  #} 
+  
+}
+```
+
+### Running on multiple cores
+
+This function divides the SNPs across the number of cores stated. Ensure that
+you have enough cores on your machine to meet the number you specify.
+
+```{r core_GLM_multi_scorer_parallel}
+core_GLM_multi_scorer_parallel <- function(
+        input, 
+        start_col = 43, 
+        col_to_use = NULL,
+        test_formula , 
+        null_formula , 
+        format_table = TRUE, 
+        num_cores = 1, 
+        output_file_stem
+) {
+  # define blocks of SNPs to have in each chunk
+  col_chunks <- split(
+    start_col:ncol(input), 
+    ceiling(
+      seq_along(start_col:ncol(input)) / num_cores
+    )
+  )
+  
+  message(
+    paste(
+      num_cores, "cores used"
+    )
+  )
+  ## edits
+  results <- parallel::mclapply(
+    col_chunks, 
+    function(chunk){
+      
+      adj_start <- start_col + min(chunk) -1
+      
+      chunk_output <- GLM_multi_scorer(
+        input, 
+        start_col = adj_start, 
+        chunk, 
+        test_formula, 
+        null_formula, 
+        #output_file = output_file_name,
+        format_table = format_table
+      )
+      
+      write.table(
+        chunk_output,
+        file = output_file_stem,
+        append = TRUE,
+        sep = ",",
+        col.names = !file.exists(output_file_stem),  # Write col names only if the file doesn't exist
+        row.names = FALSE
+      )
+      
+      
+    }, 
+    mc.cores = num_cores
+  )
+  
+  result_df <- do.call(rbind, results)
+  
+  return(result_df)
+  
+}
+```
+
+# Run PaleoBio-GLMMS
+
+```{r test_formulas}
+# define the formulas WITHOUT the response variable
+
+
+test_formulas_paleo <- c(
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + endemic_area",
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + outbreaks_area",
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + mean_T_yr_paleo",
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + T_seasonality_paleo",  
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + T_wetQ_paleo",
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + T_dryQ_paleo", 
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + mean_T_warmQ_paleo",
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + mean_T_coldQ_paleo", 
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + precip_yr_paleo", 
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + precip_dryQ_paleo", 
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + precip_coldQ_paleo",
+  "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + lai_paleo"
+)
+
+
+```
+
+> Note: not all regions have reconstructed variables (e.g: islands less than 20,000 years old). So that the LRT can compare all test models with the same null, an additional filter is applied to the dataset to remove sequences which do not have reconstructed paleo variables. 
+
+
+```{r run_multi_scorer}
+# run the test formulas without paleo variables 
+paleobio_GLMM_scores <- core_GLM_multi_scorer_parallel(
+  input = gt_pc_ds_paleobio_meta %>% filter(is.na(mean_T_yr_paleo)) , 
+  start_col = 43,  # the first column with SNP data
+  num_cores = 6, # how many cores to use
+  test_formula = test_formulas_paleo,  # as defined above
+  null_formula = "~ PC1 + PC2 + PC3 + PC4 + (1|iso2)",  # the standard null 
+  format_table = TRUE, 
+  output_file_stem = "Results/paleobio_GLMM_scores.csv"
+)
+```
+
+
+```{r format_st2_hits}
+
+# remove the null models
+paleobio_GLMM_scores <- paleobio_GLMM_scores %>%
+  filter(!is.na(Chisq))
+
+# convert positions to numeric
+paleobio_GLMM_scores$snp_pos <- as.numeric(paleobio_GLMM_scores$snp_pos)
+
+# extract covariate names 
+paleobio_GLMM_scores$covariate <- str_extract(
+  string = paleobio_GLMM_scores$`test_formulas.i.`, 
+  pattern =  "mean_T_yr_paleo|T_seasonality_paleo|T_wetQ_paleo|T_dryQ_paleo|mean_T_warmQ_paleo|mean_T_coldQ_paleo|precip_yr_paleo|precip_dryQ_paleo|precip_coldQ_paleo|npp_paleo|lai_paleo|native_area|endemic_area|outbreaks_area" 
+)
+
+# bind to rCRS positions
+paleobio_GLMM_scores <- left_join(
+  x = paleobio_GLMM_scores, 
+  y = rCRS, 
+  by = join_by("snp_pos" == "aln_pos")
+)
+
+# calculate the log10 of the chisq scores
+paleobio_GLMM_scores$log10_scores <- log10(paleobio_GLMM_scores$`Pr..Chisq.`)
+
+```
+
+Save these results... 
+
+```{r save_paleobioGLMM_hits}
+feather::write_feather(
+  x = paleobio_GLMM_scores, 
+  path = "data/feather/paleobio_GLMM_scores_08_2024.feather"
+)
+```

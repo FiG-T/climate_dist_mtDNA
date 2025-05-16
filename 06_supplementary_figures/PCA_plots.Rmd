@@ -1,0 +1,128 @@
+---
+title: "PCA Plots"
+author: "FiG-T"
+data: "`r Sys.Date()`"
+output: 
+  html_document: 
+    keep_md: yes
+    toc: yes
+toc: TRUE
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline
+---
+
+```{r}
+# mtDNA PCA scores 
+pca_scores <- feather::read_feather(
+  path = "data/feather/pca_scores_0.005_03_2024.feather"
+)
+# mtDNA PCA eigenvalues
+pca_eig <- feather::read_feather(
+  path = "data/feather/pca_eig_0.005_03_2024.feather"
+)
+```
+
+```{r load palette}
+source("https://raw.githubusercontent.com/FiG-T/climate_dist_mtDNA/refs/heads/main/climate_mtDNA_colour_palettes.R") # you may beed to add on a token here to gain access. 
+
+```
+
+# Generating PCA Plots
+
+PCA plots can be used to visualise the distribution of the data.
+
+```{r PCA_plots, echo=TRUE}
+
+# plotting PC1 vs PC2
+ggplot2::ggplot(
+  data = pca_scores, 
+  mapping = ggplot2::aes(
+    x = PC1, 
+    y = PC2, 
+    col = continent
+  )
+) +
+  ggplot2::geom_point(
+) +
+  ggplot2::scale_colour_manual(
+    values = FiGT_continent_palette 
+) + 
+  ggplot2::xlab(
+    "PC1 (19.09%)"
+  ) + 
+  ggplot2::ylab(
+    "PC2 (11.77)"
+  ) + 
+  ggplot2::theme_minimal()+ 
+  ggplot2::theme(
+    axis.text.x = ggplot2::element_text(
+      size = 15
+    ),
+     axis.text.y = ggplot2::element_text(
+      size = 15
+    ), 
+    axis.title = element_text(
+      size = 25
+    )
+  ) #+ 
+  #transparent_theme
+
+ggplot2::ggsave(
+  filename = "/figures/lhf_downsampled_PC1vsPC2.png",
+  plot = last_plot(),
+  bg = "transparent", 
+  width = 11, 
+  height = 7
+)
+```
+
+```{r PCA_plots, echo=TRUE}
+# plotting PC3 vs PC4
+ ggplot2::ggplot(
+   data = pca_scores, 
+   mapping = ggplot2::aes(
+     x = PC3, 
+     y = PC4, 
+     col = continent
+   )
+) +
+ggplot2::geom_point(
+) +
+  ggplot2::scale_colour_manual(
+    values = c(
+      "deepskyblue4", "firebrick4", "orchid3", "chartreuse4", "turquoise",
+  "chartreuse3"
+    )
+  ) + 
+  ggplot2::xlab(
+    "PC3 (7.15%)"
+  ) + 
+  ggplot2::ylab(
+    "PC4 (5.76)"
+  ) + 
+  ggplot2::theme_minimal(
+  )+ 
+  ggplot2::theme(
+    axis.text.x = ggplot2::element_text(
+      size = 15
+    ),
+     axis.text.y = ggplot2::element_text(
+      size = 15
+    ), 
+    axis.title = element_text(
+      size = 25
+    ), 
+    legend.position = "none"
+  ) + 
+  transparent_theme
+
+ggplot2::ggsave(
+  filename = "/figures/lhf_downsampled_PC3vsPC4.png",
+  plot = last_plot(),
+  bg = "transparent", 
+  width = 11, 
+  height = 7
+)
+```

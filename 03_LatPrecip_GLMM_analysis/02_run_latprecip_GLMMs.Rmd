@@ -1,0 +1,450 @@
+---
+title: "LatPrecip GLMMs"
+author: "FiG-T"
+data: "`r Sys.Date()`"
+output: 
+  html_document: 
+    keep_md: yes
+    toc: yes
+toc: TRUE
+editor_options:
+  markdown:
+    wrap: 80
+  chunk_output_type: inline 
+---
+
+# Introduction
+
+This markdown focuses on how to run the Generalised Linear Mixed Models (GLMMs). 
+
+## Libraries
+
+```{r libraries}
+library(feather)
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(parallel)
+library(ggplot2)
+library(stringr)
+```
+
+
+# Running GLMs
+
+This requires the combined dataset from above.
+
+```{r load_glm_data}
+
+# DOWNSAMPLED DATA ---- 
+gt_meta_pc_ds <- feather::read_feather(
+  path = "data/feather/gt_meta_PCs_DOWNSAMPLED.feather"
+)
+
+rCRS <- feather::read_feather(
+  path = "data/feather/rCRS_phasing.feather"
+)
+```
+
+## Loading required functions
+
+The following functions are required to run the GLM models.
+
+The overall workflow is:
+
+1.  Construct a null and full model for each SNP.
+2.  Calculate the dispersion ratio for each full model.
+3.  Filter out full models that are over or under-dispersed.
+4.  Run a comparison between the null and full model.
+5.  Select sites whereby the full model is a significantly better fit than the
+    null.
+
+
+```{r overdispersion_function}
+
+overdisp_fun <- function(model) {
+  rdf <- df.residual(model)
+  rp <- residuals(model,type="pearson")
+  Pearson.chisq <- sum(rp^2)
+  prat <- Pearson.chisq/rdf
+  pval <- pchisq(Pearson.chisq, df=rdf, lower.tail=FALSE)
+  c(chisq=Pearson.chisq,ratio=prat,rdf=rdf,p=pval)
+}
+```
+
+
+```{r core_GLM_chi_scorer}
+
+core_GLM_chi_scorer <- function(
+        input,  # the full combined dataset
+        start_col = 26,  # the column where the genotype data starts
+        col_to_use = "NULL",
+        test_formula = "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + lat + precip_yr ", 
+        null_formula = "~ PC1 + PC2 + PC3 + PC4 + (1|iso2)", 
+        format_table = FALSE
+        
+  ){
+  
+  library(dplyr)
+  
+  # define columns to use
+  if (col_to_use[1] == "NULL") { 
+    col_pos <- c(
+      start_col:ncol(input)
+    ) } else {
+    col_pos <- c(col_to_use)
+  }
+  
+  # start loop
+  for (i in col_pos){
+    
+    tryCatch({  # open a catch test 
+    
+    glm_gt_data_bi <- input %>% # remove third alleles (i.e. only have biallelic sites)
+      filter_at(
+        vars(i), 
+        all_vars(. == 1 | . == 0)
+      )
+    
+    # select position
+    snp <- names(  # test data without 2s... 
+      glm_gt_data_bi
+    )[i]
+    
+    snp_pos <- stringr::str_extract(
+      string = snp, 
+      pattern = "\\d+" # extract digits 
+    )
+    
+    #print(snp_pos)
+    
+    # create Null formula
+    formula_null <- as.formula(
+      paste(
+        snp, null_formula
+      )
+    )
+    
+    #print(formula_null)
+    
+    # create formula
+    formula <- as.formula(
+      paste(
+        snp, test_formula # combine the snp position with the covariates
+      )
+    )
+    
+    # create null model with principal components
+    null_mod <- lme4::glmer( 
+      data = glm_gt_data_bi,
+      formula = formula_null ,
+      family = "binomial", 
+      control = lme4::glmerControl(
+        optimizer = "bobyqa", 
+        optCtrl = list(maxfun = 100000)
+      )
+    )
+    # run model with environmental variables
+    mod <- lme4::glmer( 
+      data = glm_gt_data_bi,
+      formula = formula ,
+      family = "binomial", 
+      control = lme4::glmerControl(
+        optimizer = "bobyqa", 
+        optCtrl = list(maxfun = 100000)
+      )
+    )
+    
+    # compare null and full model 
+    chisq_df <- as.data.frame(
+      anova(
+        mod,  
+        null_mod,
+        test = "Chisq"
+      )
+    )
+    
+    # calculate overdispersion ratios for the full model
+    glm_overdisp <- overdisp_fun(mod)
+    
+    # combine with snp value
+    chisq_df <- cbind(
+     chisq_df, 
+      snp_pos, 
+      glm_overdisp[2] 
+      #null_df$`Pr(>Chisq)`[2]
+    )   
+    
+    #print(chisq_df)
+    
+    # include the covariates
+    chisq_df <- chisq_df %>%
+      mutate(covariate = rownames(chisq_df))
+    
+    if (i == col_pos[1]){
+      # for the first SNP make a new table of scores
+      chisq_scores_pcs <- chisq_df
+    } else {
+      # for subsequent SNPs append to this table
+      chisq_scores_pcs <- rbind(
+        chisq_scores_pcs, 
+        chisq_df
+      )
+    }
+    
+    if (i == tail(col_pos, 1)
+        ){
+      
+      # for the last SNP append then return the table
+      chisq_scores_pcs$snp_pos <- as.numeric(chisq_scores_pcs$snp_pos)
+      
+      return(chisq_scores_pcs)
+    }
+    
+    message(
+      paste(
+        snp , " - Chi Squared scores calculated"
+      )
+    )
+    
+    message(
+      paste(
+        i-start_col , "/" , length(col_pos)-start_col, " positions completed"
+      )
+    )
+    
+    }, 
+    error = function(e) {  # define what to do if an error occurs
+      message( 
+        paste(
+          "Model did not converge for SNP", col_pos[i], "- Skipping to the next SNP"
+        )
+      )
+    }
+    ) # close Catch loop
+    
+    if (i == col_pos[length(col_pos)]
+        ){
+      return(chisq_scores_pcs)
+    }
+    
+  }
+  
+  message("All Chi Squared Scores returned")
+  
+}
+```
+
+```{r core_GLM_scorer_parallel}
+
+# this function is a wrapper that allows the core_GLM_chi_scorer to be run over multiple computer cores in parallel - hopefully this should speed things up... 
+
+core_GLM_scorer_parallel <- function(
+        input, 
+        start_col = 24, 
+        col_to_use = NULL,
+        test_formula , 
+        null_formula , 
+        format_table = NULL, 
+        num_cores = 1 
+) {
+  
+  # define blocks of SNPs to have in each chunk
+  col_chunks <- split(
+    start_col:ncol(input), 
+    ceiling(
+      seq_along(start_col:ncol(input)) / num_cores
+    )
+  )
+  
+  message(
+    paste(
+      num_cores, "cores used"
+    )
+  )
+  
+  
+  results <- parallel::mclapply(
+    col_chunks, 
+    function(chunk){
+      
+      adj_start <- start_col + min(chunk) -1
+      
+      core_GLM_chi_scorer(
+        input, 
+        start_col = adj_start, 
+        col_to_use = chunk, 
+        test_formula, 
+        null_formula
+      )
+    }, 
+    mc.cores = num_cores
+  )
+  
+  result_df <- do.call(rbind, results)
+  
+  return(result_df)
+  
+}
+
+
+```
+
+```{r core_GLM_formatter}
+
+core_GLM_formatter <- function(
+        input, 
+        cutoff_quantile = 0.05, # the level to label
+        overdisp_limits = c(0.75, 1.25), # the default upper and lower dispertion limits
+        neaten = TRUE,
+        alpha = 0.05
+) {
+  
+  table <- input
+  
+  # rename annoying columns
+  names(table)[c(10,8)] <- c("overdisp", "null_chisq")
+  
+  # filter out sites that do not pass the dispersion filters 
+  table <- table %>%
+    filter(
+      overdisp >= overdisp_limits[1] & overdisp <= overdisp_limits[2]
+    )
+  
+  # calculate the number of remaining SNPs 
+  n_snps <- length(unique(table$snp_pos))
+  
+  message(
+    paste0(
+      n_snps, " remaining after dispersion filtering. /n", 
+      overdisp_limits, " used as the upper and lower limits for dispersion ratios"
+    )
+  )
+  
+  # calculate the bon_ferroni threshold for SNPs that pass chi with the null 
+  bon_threshold_null <- alpha/(n_snps*1) # 1 test conducted
+  
+  message(
+    paste(
+      alpha,
+      " used as the alpha value for significance."
+    )
+  )
+  
+  message(
+    paste(
+      bon_threshold_null , "used as the bonferroni corrected threshold value"
+    )
+  )
+  
+  # add labels for each SNP - does the Full model perform significantly better than the Null?
+  table$null_label[table$null_chisq <= bon_threshold_null] <- "T"
+  table$null_label[table$null_chisq >= bon_threshold_null] <- "F"
+  
+  # add a label column 
+  table$labels <- table$snp_pos
+  
+  # determine the top 5% cutoff (or as defined in the input)
+  cutoff <- as.numeric(
+    quantile(
+      table$`Pr(Chi)`, 
+      cutoff_quantile, 
+      na.rm = TRUE
+    )
+  )
+  # only include the labels for those above this threshold 
+  table$labels[table$`Pr(Chi)` >= cutoff ] <- ""
+
+  if (neaten == TRUE) {
+  # filter results to neaten plot
+    table <- table %>%
+      filter(!is.na(DF)) 
+  }
+  
+  return(table)
+}
+
+```
+
+```{r core_GLM_scores_downsampled, include=FALSE}
+system.time(
+core_GLM_scores_ds <- core_GLM_scorer(
+  input = gt_meta_pc_ds, 
+  start_col = 26,
+  test_formula = "~ PC1 + PC2 + PC3 + PC4 + (1|iso2) + lat + precip_yr ", 
+  null_formula = "~ PC1 + PC2 + PC3 + PC4 + (1|iso2)"
+)
+)
+
+
+```
+
+```{r save_core_GLM}
+
+# saving the core GLM scores when PCs are used as the measure of relatedness & the downsampled data is used
+feather::write_feather(
+  x = core_GLM_scores_ds, 
+  path = "results/latprecip/core_GLM_scores_DOWNSAMPLED_05_2024.feather" # date changed
+)
+```
+
+## Format & filtering outputs
+
+```{r format_core_GLM_scores}
+core_GLM_scores_formatted <- core_GLM_formatter(
+  input = core_GLM_scores_ds,  # full table with GLM scores
+  cutoff_quantile = 0.05,   # which values to include labels for 
+  overdisp_limits = c(0.8, 200), # the upper and lower bounds for overdispertion ratios
+  neaten = FALSE, 
+  alpha = 0.01
+)
+```
+
+```{r format_core_GLM_scores_phased}
+
+# match with rCRS reference genome positions 
+core_GLM_scores_formatted_phased <- left_join(
+  x = core_GLM_scores_formatted, 
+  y = rCRS, 
+  by = join_by("snp_pos" == "aln_pos")
+)
+
+feather::write_feather(
+  x = core_GLM_scores_formatted_phased, 
+  path = "results/feather/core_GLM_scores_formatted_phased_ds_08_2024.feather" # date changed
+)
+
+write.csv(
+  x = core_GLM_scores_formatted_phased, 
+  file = "results/LatPrecip_GLMM_scores_allSNPs.csv"
+)
+
+```
+
+```{r save_formatted_meta}
+# convert SNP values to match column names
+pos_subset <- str_c(
+  "pos_", unique(core_GLM_scores_formatted_phased$snp_pos), 
+  sep = ""
+)
+
+# select the columns that match the metadata and SNP hits 
+gt_meta_ds_subset <- gt_meta_pc_ds %>%
+  select(
+    acc:precip_seasonality,
+    all_of(
+      pos_subset
+    )#, 
+   # pos_3060, pos_3557, pos_3970
+  )
+
+names(gt_meta_ds_subset)
+
+feather::write_feather(
+  x = gt_meta_ds_subset, 
+  path = "data/feather/gt_meta_pc_ds_subset_08_2024.feather"
+)
+
+```
+
+At this point please refer to the 'genotype_clusters.Rmd' for clustering correlated SNPS
