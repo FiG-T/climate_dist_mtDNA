@@ -29,23 +29,27 @@ library(stringr)
 
 ```{r required_data}
 # formatted table (see 2_run_latprecipGLMMS.Rmd)
-core_GLM_scores_formatted_phased <- feather::read_feather(
-  path = "results/feather/core_GLM_scores_formatted_phased_ds_08_2024.feather" 
+latprecip_glmm_scores <- readxl::read_excel(
+  path = here::here("XX_Data","Grover-Thomas_et_al._SupplementaryTables.xlsx"), 
+  sheet = "Supp. Table 2"
 )
+latprecip_glmm_scores$null_pvalue <- as.numeric(latprecip_glmm_scores$null_pvalue)
 
 # mtDNA loci positioning 
 mt_loci_pos <- feather::read_feather(
-  path = "data/feather/mtDNA_loci_all_positions_classifications.feather"
+  path = here::here("XX_Data","mtDNA_loci_all_positions_classifications.feather")
 )
 
 # just the candidate loci: 
-latprecip_core_min_clust <- feather::read_feather(
-  path = "results/feather/core_GLM_scores_mins_ds_clusteredr0.2_11_2024.feather" # check date
+latprecip_glmm_scores_candidates <- readxl::read_excel(
+  path = here::here("XX_Data","Grover-Thomas_et_al._SupplementaryTables.xlsx"), 
+  sheet = "Table 1"
 )
+latprecip_glmm_scores_candidates$LRT_pvalue <- as.numeric(latprecip_glmm_scores_candidates$LRT_pvalue)
 ```
 
 ```{r load palette}
-source("https://raw.githubusercontent.com/FiG-T/climate_dist_mtDNA/refs/heads/main/climate_mtDNA_colour_palettes.R") # you may beed to add on a token here to gain access. 
+source(here::here("climate_mtDNA_colour_palettes.R"))
 
 ```
 
@@ -63,25 +67,27 @@ p-value.
 # define the alpha threshold for significance
 alpha <- 0.01 
 
-n_snps <-  length(unique(core_GLM_scores_formatted_phased$rCRS_pos)) # change depending on the output from format_core_GLM_scores
+n_snps <-  length(unique(latprecip_glmm_scores$rCRS_pos)) # change depending on the output from format_core_GLM_scores
 
 bon_threshold_null <- alpha/(n_snps*1) # as only 1 test performed per SNP in this test. 
 
 ggplot2::ggplot(
-  data = core_GLM_scores_formatted_phased, 
+  data = latprecip_glmm_scores, 
   mapping = aes(
     x = rCRS_pos,
-    y = log10(null_chisq)
+    y = log10(null_pvalue)
   )
 ) +
   geom_point(
-    colour = "darkorchid", 
-    size = 3
+    colour = "black",#"darkorchid", 
+    size = 3, 
+    alpha = 0.65
   ) +
   geom_line(
     y = -1*log10(bon_threshold_null), 
     colour = "black", 
     linewidth = 1,
+    linetype = "dashed"
   ) + 
   scale_x_continuous(
     breaks = seq(0,17000, 1000)
@@ -95,30 +101,42 @@ ggplot2::ggplot(
     "Position (relative to rCRS)"
   ) +
   geom_segment(
-    data = mt_loci_pos,
+    data = mt_loci_pos |> filter(classification %in% c("C_I", "C_III","C_IV","C_V","HVS","mtTF1","rRNA","tRNA","SHLP")),
     ggplot2::aes(
-      x = Starting, 
+      x = Starting,
       #x = aln_start,
-      xend = Ending, 
+      xend = Ending,
       #xend = aln_end,
-      y = 0.5, 
-      yend = 0.5, 
+      y = 0.5,
+      yend = 0.5,
       col = classification
     ),
-    linewidth = 3, 
-    alpha = 0.7, 
+    linewidth = 10,
+    alpha = 0.7,
     position = ggplot2::position_jitter(
-      height = 0.1
+      height = 0.2
     )
   ) +
   scale_colour_manual(
     values = c(
       mtDNA_palette
-    )
+    ), 
+    labels = c(
+      "Complex I", "Complex III", "Complex IV","Complex V",
+      "HyperVariable \nSegments",
+      "mt-Transcription \nFactor 1 binding \nsite",
+      #"Origin of H-strand \nreplication",
+      "ribosomal RNA",
+      "Short Humanin \nLike Proteins", 
+      "transfer RNA"
+    ), 
+    name = "Classification"
   ) +
-  theme_minimal()+
+  theme_light()+
   theme(
-    legend.position = "none", 
+    #legend.position = "none", 
+    legend.axis.line = element_blank(),
+    legend.justification.bottom = 0, 
     axis.line = ggplot2::element_line(
       linewidth = 1, 
       colour = "black"
@@ -141,18 +159,20 @@ ggplot2::ggplot(
       size = 20
     ),
     axis.text = element_text(
-      size = 14
+      size = 10, 
+      angle = 45,
+      hjust = 1
     )
   )
 ```
 
 ```{r save_core_manhattan_plot}
 ggplot2::ggsave(
-  filename = "figures/lhf_core_GLM_08_2024.png",
+  filename = here::here("XX_Figures", "figure1B.pdf"),
   plot = last_plot(),
   bg = "transparent", 
   width = 11, 
-  height = 7
+  height = 6
 )
 ```
 
@@ -165,12 +185,12 @@ For consistency, we order the loci classifications into helpful order:
 ```{r order_factors}
 
 # combine the list of significant SNPs with the table showing the number of SNPs at each locus
-latprecip_core_min_clust$Map.Locus <- factor( # arrange the locus into the order you want to plot them in
-  x = latprecip_core_min_clust$Map.Locus, 
+latprecip_glmm_scores_candidates$Map.Locus <- factor( # arrange the locus into the order you want to plot them in
+  x = latprecip_glmm_scores_candidates$Map.Locus, 
   levels = c(
     "MT-ATT", "MT-CR", # Attachment site and control region
-    "MT-7SDNA", "MT-HV1", "MT-HV2", 
-    "MT-OHR",  "MT-TAS2",  "MT-TFX" ,
+    "MT-7SDNA","MT-TAS2", "MT-HV1", "MT-HV2", 
+    "MT-OHR",  "MT-TFX" ,
     "MT-ND1", "MT-ND2", "MT-ND3", "MT-ND4", "MT-ND5", "MT-ND6",
     "MT-CYB",
     "MT-CO1","MT-CO2", "MT-CO3", 
@@ -185,26 +205,52 @@ latprecip_core_min_clust$Map.Locus <- factor( # arrange the locus into the order
 ```{r hits_dotplot}
   
 ggplot2::ggplot(
-  data = latprecip_core_min_clust, # using the significant hits 
-  mapping = aes(
-    x = as.factor(rCRS_pos), 
-    y = Map.Locus, 
-    colour = log10(null_chisq)
-  )
-)  + geom_tile(
+    data = latprecip_glmm_scores_candidates |> 
+      filter(classification %in% c(
+        "C_I", "C_III","C_IV","C_V","HVS","mtTF1", "OH","rRNA","tRNA","SHLP", "CR"
+      )), # using the significant hits 
+    mapping = aes(
+      x = as.factor(rCRS_pos), 
+      y = Map.Locus, 
+      colour = log10(LRT_pvalue)
+    )
+  ) +
+  geom_tile(
     mapping = aes(
       fill = classification,
     ), 
     alpha = 0.75,
     colour = "white",
-    show.legend = TRUE
-  )  +
+    #show.legend = TRUE
+  ) +
   scale_fill_manual(
-    values = mtDNA_palette
+    values = mtDNA_palette, 
+    labels = c(
+      "Complex I", "Complex III", "Complex IV","Complex V",
+      "Control Region \n(subset)",
+      "HyperVariable \nSegments",
+      "mt-Transcription Factor 1 \nbinding site",
+      "Origin of H-strand \nreplication",
+      "ribosomal RNA",
+      "Short Humanin \nLike Proteins", "transfer RNA"
+    ),
+    name = "MITOMAP Classification"
   ) +
   geom_point(
-  size = 5
-) +
+    size = 5, 
+    colour = "white", 
+    alpha = 0.75
+  ) +
+  geom_point(
+    size = 4
+  ) +
+  geom_text(
+    mapping = aes(
+      label = effect
+    ), 
+    size = 4, 
+    nudge_y = 0.75, colour = "black"
+  ) +
   xlab(
     "SNP rCRS postion"
   ) +
@@ -213,23 +259,37 @@ ggplot2::ggplot(
   ) +
   labs(
     colour = "Log10 Chisq Score"
-  )+
+  ) +
   theme_light(
+  ) + 
+  guides(
+    colour = guide_colourbar(position = "right"),
+    fill   = guide_legend(
+      position = "right", 
+      title.position = "top"
+    )
   ) + 
   theme(
     axis.text.x = element_text(
       angle = 90, 
       vjust = 0.5
     ), 
-    legend.title = element_text(
-      
+    legend.text = element_text(size = 10), 
+    legend.key.spacing.y = unit(5, "pt"), 
+    axis.title.x = element_text(vjust = -1), 
+    panel.grid.major.y = element_line(
+      linetype = "solid", 
+      colour = "grey80"
+    ), 
+    panel.grid.major.x = element_line(
+      linetype = "dotted"
     )
   ) 
 ```
 
 ```{r save_multiple_dotplot}
 ggplot2::ggsave(
-  filename = "figures/lhf_hits_loci_dotplot_r0.2_11_2024.png",
+  filename = here::here("XX_Figures", "figure2.pdf"),
   plot = last_plot(),
   bg = "transparent", 
   width = 11, 
