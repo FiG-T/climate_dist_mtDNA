@@ -1,6 +1,6 @@
 # Climate associated natural selection in the human mitochondrial genome. 
 
-Finley Grover-Thomas $^1$  , Lucy van Dorp $^1$, Francois Balloux $^1$ , Aida Moran Andrés $^1$,  Maria Florencia Camus $^{1*}$
+Finley Grover-Thomas $^1$  , Lucy van Dorp $^1$, Francois Balloux $^1$ , Aida Moran Andrés $^1$,  M. Florencia Camus $^{1*}$
 
 $^1$ : Department of Genetics, Evolution and Environment, University College London, London, UK 
 
