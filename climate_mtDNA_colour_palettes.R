@@ -20,7 +20,8 @@ mtDNA_palette <- c(
   rRNA = "limegreen", 
   Humanin = "chartreuse3", SHLP = "chartreuse2", 
   tRNA = "chartreuse4", 
-  NC = "grey60"
+  NC = "grey60", 
+  CR = "snow4"
 )
 
 # ----- Environmental covariate palette -----
